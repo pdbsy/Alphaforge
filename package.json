@@ -87,7 +87,7 @@
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.7",
+    "@types/react-dom": "19.3.0",
     "eslint": "10.10.0",
     "globals": "17.12.0",
     "prettier": "3.9.6",
@@ -102,7 +102,7 @@
     "ethers": "6.17.0",
     "fastify": "5.12.5",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.3.0"
   },
   "packageManager": "npm@11.19.1",
   "overrides": {
