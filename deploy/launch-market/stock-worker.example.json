@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "manifestFile": "/var/lib/alphaforge-stock-worker-config/verified-manifest.json",
+  "rpcUrl": "https://rpc.testnet.chain.robinhood.com",
+  "dataCredentialsFile": "/var/lib/alphaforge-stock-worker-config/market-data.json",
+  "sessionsFile": "/var/lib/alphaforge-market-testnet-community/stock-owner-consents.json",
+  "directory": "/var/lib/alphaforge-stock-worker",
+  "nonceDirectory": "/var/lib/alphaforge-stock-nonce-ownership",
+  "pollSeconds": 5,
+  "maxStorageBytes": 8000000000,
+  "feeds": [],
+  "gas": {
+    "gasLimit": "500000",
+    "maxFeePerGas": "1000000000",
+    "maxPriorityFeePerGas": "100000000",
+    "maxGasCostWei": "500000000000000"
+  },
+  "maxTotalGasCostWei": "10000000000000000",
+  "signers": []
+}

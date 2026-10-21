@@ -114,6 +114,21 @@ export class MarketEventIndexer {
   #state: 'NOT_RUN' | 'SYNCING' | 'HEALTHY' | 'DEGRADED' = 'NOT_RUN';
   #error: string | null = null;
   #resetPending = false;
+  /** Uses the existing canonical scan only; valuation reads must never fetch a block from RPC. */
+  canonicalAnchor(blockNumber: string): { known: boolean; blockHash: string | null } {
+    if (this.#tail || this.#closing || this.#closed || this.#state !== 'HEALTHY')
+      return { known: false, blockHash: null };
+    const height = uint(blockNumber);
+    if (height > BigInt(Number.MAX_SAFE_INTEGER)) throw new LaunchMarketError('INDEX_BLOCK_RANGE', 503);
+    const cursor = this.cursor();
+    if (!cursor || cursor.number < height) return { known: false, blockHash: null };
+    const row = this.db
+      .prepare('SELECT hash FROM event_index_blocks WHERE number=? AND canonical=1')
+      .get(Number(height));
+    if (row) return { known: true, blockHash: String(row.hash) };
+    // A missing height is not proof of an orphan: the scanner may not cover this range yet.
+    return { known: false, blockHash: null };
+  }
   constructor(options: MarketEventIndexerOptions) {
     validateManifest(options.manifest);
     this.options = options;
@@ -122,7 +137,7 @@ export class MarketEventIndexer {
     if (
       !Number.isInteger(this.intervalMs) ||
       this.intervalMs < 100 ||
-      this.intervalMs > 5000 ||
+      this.intervalMs > 30_000 ||
       !Number.isInteger(this.maxBlocks) ||
       this.maxBlocks < 1 ||
       this.maxBlocks > 2000

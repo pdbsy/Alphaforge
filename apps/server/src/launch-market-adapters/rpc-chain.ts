@@ -147,10 +147,11 @@ class MarketReadProvider extends JsonRpcProvider {
       try {
         return await super.send(method, params);
       } catch (error) {
-        const detail =
-          error && typeof error === 'object' && 'error' in error
-            ? (error.error as { code?: unknown; message?: unknown } | undefined)
-            : undefined;
+        // ethers puts eth_call RPC errors inside CALL_EXCEPTION.info.error,
+        // while other read methods expose the original error at .error.
+        const rpcError = error as { error?: unknown; info?: { error?: unknown } } | null | undefined;
+        const detail = (rpcError?.error ?? rpcError?.info?.error) as
+          { code?: unknown; message?: unknown } | undefined;
         const pinned = Array.isArray(params)
           ? method === 'eth_getBlockByNumber'
             ? params[0]

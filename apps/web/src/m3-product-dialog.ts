@@ -41,7 +41,7 @@ const escapeHtml = (value: unknown): string =>
 
 export function renderM3DepositApprovalDialog(review: M3DepositApprovalReview): string {
   const required = review.requirements.filter((requirement) => !requirement.sufficient);
-  return `<span class="section-label">TESTNET / EXACT APPROVALS</span><h2>Authorize Deposit.</h2><p>Each approval fixes one token, the configured Vault spender and the exact finite amount required for this Deposit. Submit one approval, wait for its receipt, then start a new review for the remaining requirement.</p><div class="receipt"><div class="receipt-lines">${review.requirements
+  return `<span class="section-label">WALLET / EXACT APPROVALS</span><h2>Authorize Deposit.</h2><p>Each approval fixes one token, the configured Vault spender and the exact finite amount required for this Deposit. Submit one approval, wait for its receipt, then start a new review for the remaining requirement.</p><div class="receipt"><div class="receipt-lines">${review.requirements
     .map(
       (requirement) =>
         `<div><span>${requirement.kind === 'af-usdc' ? 'AF-USDC' : 'Pass'} · allowance ${escapeHtml(requirement.allowance)}</span><span>required ${escapeHtml(requirement.requiredRaw)} · ${escapeHtml(requirement.token)} → ${escapeHtml(requirement.spender)}</span></div>`,

@@ -534,7 +534,18 @@ export class LaunchMarketService {
       )
         next = { ...old, state: 'REORGED', confirmations: 0, error: 'NON_CANONICAL_RECEIPT' };
       else {
-        const depth = uint(snapshot.location.blockNumber) - uint(receipt.blockNumber) + 1n;
+        // The event scanner can lag behind a newly mined transaction. Its
+        // projection version remains metadata, never the confirmation clock.
+        const head = chain.head
+          ? await chain.head()
+          : await chain.snapshot().then((value) => ({
+              number: value.location.blockNumber,
+              hash: value.location.blockHash,
+            }));
+        const headNumber = uint(BigInt(head.number).toString());
+        if ((await chain.canonicalBlockHash(headNumber.toString()))?.toLowerCase() !== hash(head.hash))
+          throw new LaunchMarketError('NON_CANONICAL_MARKET_HEAD', 503);
+        const depth = headNumber - uint(receipt.blockNumber) + 1n;
         const confirmations = depth > 0n ? Number(depth) : 0;
         next = {
           ...old,

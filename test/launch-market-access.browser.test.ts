@@ -153,7 +153,7 @@ test(
           challenge = {
             nonce,
             expiresAt,
-            message: `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${owner}\n\nSign in to AlphaForge wallet-only TESTNET mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${origin}\nVersion: 1\nChain ID: 46630\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`,
+            message: `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${owner}\n\nSign in to AlphaForge wallet-only mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${origin}\nVersion: 1\nChain ID: 46630\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`,
           };
           return json(challenge);
         }
@@ -444,7 +444,7 @@ test(
             await page.locator('[data-launch-asset]').selectOption('AF_USDC');
             const primary = page.locator('[data-launch-order] [data-launch-bind]');
             assert.equal(await primary.isEnabled(), true);
-            assert.match(await primary.innerText(), /Start test session/);
+            assert.match(await primary.innerText(), /Continue with wallet/);
             await primary.click();
             await page.locator('[data-launch-bind-confirm]').waitFor();
             assert.match(
@@ -571,7 +571,7 @@ test(
             await page.locator('[aria-label="Reviewed stock trade"]').waitFor();
             const review = await page.locator('[aria-label="Reviewed stock trade"]').innerText();
             assert.match(review, /10 AF-USDC/);
-            assert.match(review, /0\.05 AF-TEST-AMZN/);
+            assert.match(review, /0\.05 AMZN stock units/);
             assert.match(review, /Confirm stock trade in wallet/);
             assert.equal(
               await page.evaluate(() =>

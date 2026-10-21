@@ -147,7 +147,7 @@ export interface AmbiguousSubmission {
 }
 
 export type WalletSubmission = SubmittedOperation | AmbiguousSubmission;
-export type BeforeWalletSend = () => void;
+export type BeforeWalletSend = () => void | Promise<void>;
 
 export interface BrowserWalletPort {
   connect(): Promise<WalletSession>;
@@ -343,7 +343,16 @@ export class Eip1193Wallet implements BrowserWalletPort {
       if (preSubmit.chainId !== this.#chainId) throw new WalletFailure('WALLET_WRONG_CHAIN');
       if (session.changed) throw new WalletFailure('WALLET_SESSION_CHANGED');
 
-      beforeSend?.();
+      await beforeSend?.();
+      // A remote action guard may await a cross-device pause check. Bind the
+      // wallet again after that wait, before handing the transaction to it.
+      if (beforeSend) {
+        const guarded = await this.#connection.observe();
+        if (!guarded) throw new WalletFailure('WALLET_DISCONNECTED');
+        if (!sameAddress(guarded.account, prepared.owner)) throw new WalletFailure('WALLET_ACCOUNT_CHANGED');
+        if (guarded.chainId !== this.#chainId) throw new WalletFailure('WALLET_WRONG_CHAIN');
+        if (session.changed) throw new WalletFailure('WALLET_SESSION_CHANGED');
+      }
       let result: unknown;
       try {
         result = await this.#provider.request({

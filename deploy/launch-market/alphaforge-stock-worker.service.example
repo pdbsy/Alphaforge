@@ -1,0 +1,29 @@
+[Unit]
+Description=AlphaForge stock reference and authorized Vault execution
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alphaforge-workshop
+Group=alphaforge-workshop
+WorkingDirectory=/opt/alphaforge-fair-launch/releases/REVIEWED_IMMUTABLE_RELEASE
+# PREPARE ONLY by default. Activation is a separate operator action after readiness and consent checks.
+ExecStart=/opt/ikol-access/runtime/node tools/launch-market/stock-worker.ts --watch /var/lib/alphaforge-stock-worker-config/worker.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/alphaforge-stock-worker /var/lib/alphaforge-stock-nonce-ownership
+ReadOnlyPaths=/var/lib/alphaforge-stock-worker-config /var/lib/alphaforge-market-testnet-community
+Environment=NODE_ENV=production
+# An activated unit uses --activate worker.json activation.json and the explicit acknowledgement:
+# Environment=AF_STOCK_EXECUTION_ACK=I_AUTHORIZE_STOCK_WORKER_46630
+# Never add the claim/quote voucher signers to this worker.
+
+[Install]
+WantedBy=multi-user.target

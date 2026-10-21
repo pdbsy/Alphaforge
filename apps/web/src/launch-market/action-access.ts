@@ -33,7 +33,7 @@ export function actionAccess(
         action: 'BIND',
         reason:
           state.config.emailVerificationRequired === false && !state.account?.emailVerified
-            ? 'Start a wallet test session with an ownership message. No email verification is required; this signature moves no assets.'
+            ? 'Confirm wallet ownership with a message signature to continue. This signature moves no assets.'
             : 'Link your verified account with an ownership message before continuing.',
       } as const;
     return { action: 'LOGIN', reason: 'Sign in to your verified account, then link this wallet.' } as const;
@@ -67,7 +67,7 @@ export function actionControl(
   const controls = {
     CONNECT:
       '<button type="button" class="primary-btn full" data-launch-connect>Connect wallet to continue ↗</button>',
-    BIND: `<button type="button" class="primary-btn full" data-launch-bind>${state.config?.emailVerificationRequired === false && !state.account?.emailVerified ? 'Start test session to continue' : 'Link account to continue'} ↗</button>`,
+    BIND: `<button type="button" class="primary-btn full" data-launch-bind>${state.config?.emailVerificationRequired === false && !state.account?.emailVerified ? 'Continue with wallet' : 'Link account to continue'} ↗</button>`,
     LOGIN: '<a class="primary-btn full" href="/login/?next=%2Falphaforge%2F">Sign in to continue ↗</a>',
     REVIEW: `<button type="submit" class="primary-btn full">${escapeHtml(label)} ↗</button>`,
     WAIT: `<button type="submit" class="primary-btn full" disabled>${escapeHtml(label)} ↗</button>`,

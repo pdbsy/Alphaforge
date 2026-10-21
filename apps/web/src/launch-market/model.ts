@@ -51,6 +51,7 @@ export interface LaunchClientState {
   readonly owner: string | null;
   readonly connecting: boolean;
   readonly busy: boolean;
+  readonly walletSignIn?: 'CHECKING' | 'AWAITING_SIGNATURE' | 'VERIFYING' | null;
   readonly quote: MarketQuote | null;
   readonly quoteRequest: QuoteRequest | null;
   readonly executorReview?: ExecutorReview | null;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Wallet, getBytes, toUtf8String } from 'ethers';
+import { Wallet, getAddress, getBytes, toUtf8String } from 'ethers';
 import { LaunchMarketStore } from '../packages/launch-market/src/store.ts';
 import { marketInterfaces } from '../packages/launch-market/src/abi.ts';
 import {
@@ -762,13 +762,13 @@ test('invalid or verification-required test session cannot authorize a mutation 
 });
 
 function testMessage(owner: string, nonce: string, origin = 'https://www.ikol.top'): string {
-  return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${owner.toLowerCase()}\n\nSign in to AlphaForge wallet-only TESTNET mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${origin}\nVersion: 1\nChain ID: 46630\nNonce: ${nonce}\nIssued At: ${new Date(NOW * 1000).toISOString()}\nExpiration Time: ${new Date((NOW + 300) * 1000).toISOString()}`;
+  return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${getAddress(owner)}\n\nSign in to AlphaForge wallet-only mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${origin}\nVersion: 1\nChain ID: 46630\nNonce: ${nonce}\nIssued At: ${new Date(NOW * 1000).toISOString()}\nExpiration Time: ${new Date((NOW + 300) * 1000).toISOString()}`;
 }
 
-test('wallet test session accepts the actual Store challenge and verifies an actual ownership signature without claiming email verification', async (context) => {
+test('wallet test session normalizes a lowercase provider address to the checksummed Store message and verifies an actual ownership signature', async (context) => {
   const f = fixture();
   const signer = Wallet.createRandom(); // Ephemeral cryptographic unit fixture; never a deployed user wallet.
-  f.provider.owner = signer.address;
+  f.provider.owner = signer.address.toLowerCase();
   f.state.account = null;
   f.state.wallet = { ...f.state.wallet, owner: signer.address, accountId: null };
   f.state.config = { ...f.state.config, emailVerificationRequired: false };
@@ -780,6 +780,8 @@ test('wallet test session accepts the actual Store challenge and verifies an act
     if (input.method === 'personal_sign') {
       f.provider.calls.push(input);
       assert.equal(toUtf8String(getBytes(input.params![0] as string)), message);
+      assert.equal(message.split('\n')[1], signer.address);
+      assert.equal(input.params![1], message.split('\n')[1]);
       return signer.signMessage(message);
     }
     return original(input);
@@ -827,7 +829,7 @@ test('wallet test session accepts the actual Store challenge and verifies an act
   assert.equal(client.state.account!.emailVerified, false);
   assert.equal(client.state.account!.identityKind, 'WALLET_TEST');
   assert.equal(client.state.wallet!.accountId, f.state.account!.id);
-  assert.match(client.state.notice!, /wallet test session is active/);
+  assert.match(client.state.notice!, /signed in with your wallet/);
   assert.equal(
     paths.some((p) => p.endsWith('/wallet/challenge') || p.endsWith('/wallet/bind')),
     false,
@@ -930,7 +932,7 @@ test('an expired real market test session clears unsent quotes and linkage while
     assert.equal(f.client.state.account, null);
     assert.equal(f.client.state.wallet!.accountId, null);
     assert.equal(f.client.state.quote, null);
-    assert.match(f.client.state.error!, /wallet test session/);
+    assert.match(f.client.state.error!, /wallet session|Sign in with your wallet/);
     if (submitted) {
       assert.equal(f.client.state.transaction.hash, HASH);
       assert.equal(f.client.state.transaction.state, 'SUBMITTED');

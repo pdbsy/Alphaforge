@@ -11,6 +11,14 @@ import { registerLaunchMarketRoutes } from './routes.ts';
 import type { MarketEventIndexer } from './indexer.ts';
 import { StockReferenceHistory, type StockHistoryRange } from '../stock-reference/history.ts';
 import { StockReferenceQuotes } from '../stock-reference/quotes.ts';
+import type { CommunityStore } from '../../../../packages/launch-market/src/community.ts';
+import type { CreatorStrategyStore } from '../../../../packages/launch-market/src/creator.ts';
+import type { StockAutomationOptions } from './automation-routes.ts';
+import type { VaultRunOptions } from './vault-run-routes.ts';
+import type { VaultValuations } from '../launch-market-adapters/vault-valuation.ts';
+import type { OperatorStockDataOptions } from './operator-stock-data-routes.ts';
+import type { PaperVaultValueOptions } from './paper-vault-routes.ts';
+import type { PaperMarketDataCache } from '../launch-market-adapters/paper-market-data.ts';
 
 export interface LaunchMarketServerOptions {
   readonly service: LaunchMarketService;
@@ -23,11 +31,23 @@ export interface LaunchMarketServerOptions {
   readonly verificationRequired?: () => boolean | Promise<boolean>;
   readonly indexer?: MarketEventIndexer;
   readonly webRoot?: string;
+  readonly community?: CommunityStore;
+  readonly creators?: CreatorStrategyStore;
+  readonly canCommunityWrite?: () => boolean;
+  readonly automation?: StockAutomationOptions;
+  readonly vaultRun?: VaultRunOptions;
+  readonly vaultValuations?: Pick<VaultValuations, 'read'>;
+  readonly operatorStockData?: OperatorStockDataOptions;
+  readonly paperVault?: PaperVaultValueOptions;
+  readonly paperMarketData?: Pick<PaperMarketDataCache, 'read' | 'status'>;
+  readonly rpcProvider?: 'OFFICIAL_PUBLIC';
   /** Read-only UI references, independent of the trusted stock execution/valuation adapter. */
   readonly stockHistory?: Pick<StockReferenceHistory, 'read'>;
   readonly stockQuotes?: Pick<StockReferenceQuotes, 'read'>;
   /** Qualifies the concrete RPC reader and external credential/feed adapters before serving. */
   readonly initialize?: () => Promise<void>;
+  /** Stop shared maintenance before its ledger/chain dependencies are closed. */
+  readonly beforeClose?: () => Promise<void>;
   /** Release concrete provider/feed resources. The builder owns service and indexer shutdown. */
   readonly dispose?: () => Promise<void>;
 }
@@ -59,6 +79,9 @@ export async function buildLaunchMarketServer(
     throw new LaunchMarketError('MARKET_CHAIN_NOT_CONFIGURED', 503);
   const app = Fastify({
     logger: false,
+    // The gateway replaces X-Forwarded-For with the remote client address.
+    // Only the loopback reverse proxy may supply that address for rate limits.
+    trustProxy: ['127.0.0.1', '::1'],
     bodyLimit: 16_384,
     requestTimeout: 10_000,
     // The first bounded historical scan can exceed Fastify's default 10-second readiness deadline.
@@ -187,10 +210,17 @@ export async function buildLaunchMarketServer(
   });
   app.addHook('onClose', async () => {
     try {
+      await options.beforeClose?.();
       await options.indexer?.close();
     } finally {
       try {
-        options.service.close();
+        try {
+          options.service.close();
+        } finally {
+          options.community?.close();
+          options.creators?.close();
+          options.vaultRun?.store.close();
+        }
       } finally {
         await options.dispose?.();
       }

@@ -387,7 +387,7 @@ test('target integrity rejects violated CHECK data under the unchanged canonical
   }
 });
 
-test('schema v2 backup preserves genuine wallet-test sessions and opaque eligibility across restore', async () => {
+test('schema v3 backup preserves genuine wallet sessions and opaque eligibility across restore', async () => {
   const f = fixture();
   try {
     const wallet = Wallet.createRandom(),
@@ -464,7 +464,7 @@ PRAGMA foreign_keys=ON;`);
     });
     const recovered = new LaunchMarketStore(join(restored, 'market.sqlite'), origin);
     try {
-      assert.equal(recovered.db.prepare('PRAGMA user_version').get()?.user_version, 2);
+      assert.equal(recovered.db.prepare('PRAGMA user_version').get()?.user_version, 3);
       assert.equal(recovered.db.prepare('PRAGMA foreign_key_check').get(), undefined);
     } finally {
       recovered.close();
