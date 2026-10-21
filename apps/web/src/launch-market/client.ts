@@ -1,4 +1,4 @@
-import { Interface, hexlify, toUtf8Bytes, verifyMessage } from 'ethers';
+import { Interface, getAddress, hexlify, toUtf8Bytes, verifyMessage } from 'ethers';
 import { asAddress, asHexData } from '../../../../packages/chain-adapter/src/types.ts';
 import { validateManifest, uint } from '../../../../packages/launch-market/src/config.ts';
 import { marketInterfaces, validateQuoteTransaction } from '../../../../packages/launch-market/src/abi.ts';
@@ -64,6 +64,13 @@ const states = new Set([
   'RECOVERY_REQUIRED',
 ]);
 export type LaunchApi = <T>(path: string, body?: unknown) => Promise<T>;
+const walletChallengeTime = Symbol('walletChallengeTime');
+type WalletSignInChallenge = {
+  nonce: string;
+  message: string;
+  expiresAt: number;
+  [walletChallengeTime]?: () => number;
+};
 export class MarketApiError extends Error {
   readonly status: number;
   constructor(code: string, status: number) {
@@ -111,6 +118,7 @@ export function createLaunchApi(fetcher: typeof fetch = fetch): LaunchApi {
         csrf = session.csrfToken;
       }
     }
+    const requestStarted = performance.now();
     const response = await fetcher(path, {
       method: body === undefined ? 'GET' : 'POST',
       credentials: 'same-origin',
@@ -141,6 +149,21 @@ export function createLaunchApi(fetcher: typeof fetch = fetch): LaunchApi {
       throw new MarketApiError(code, response.status);
     }
     if (path === `${prefix}/account` || path === `${prefix}/config`) csrf = null;
+    if (
+      body !== undefined &&
+      [`${prefix}/wallet/test-challenge`, `${prefix}/wallet/challenge`].includes(path)
+    ) {
+      const challenge: unknown = await response.json();
+      const responseDate = Date.parse(response.headers.get('date') ?? '');
+      if (challenge && typeof challenge === 'object' && Number.isFinite(responseDate)) {
+        // HTTP Date has whole-second precision and can retain the preceding second.
+        // Advance its upper bound and transport elapsed time to conservatively age the challenge.
+        Object.defineProperty(challenge, walletChallengeTime, {
+          value: () => Math.floor((responseDate + 1000 + performance.now() - requestStarted) / 1000),
+        });
+      }
+      return challenge as T;
+    }
     return response.json() as Promise<T>;
   };
 }
@@ -266,6 +289,7 @@ export class LaunchMarketClient {
   readonly #listeners = new Set<(state: LaunchClientState) => void>();
   #generation = 0;
   #identityRevision = 0;
+  readonly #completedStreamOperations = new Set<string>();
   #quoteRevision: number | null = null;
   #executorReviewRevision: number | null = null;
   #executorReviewEpoch = 0;
@@ -274,6 +298,7 @@ export class LaunchMarketClient {
   readonly #journal: Storage | undefined;
   #pendingExecutor: ExecutorPending | null = null;
   #confirmedExecutor: ExecutorPending | null = null;
+  #submissionGuard: (() => Promise<void>) | null = null;
   #state: LaunchClientState = {
     enabled: false,
     config: null,
@@ -324,6 +349,10 @@ export class LaunchMarketClient {
   get state(): LaunchClientState {
     return structuredClone(this.#state);
   }
+  /** Optional owner workflow guard; it never signs or changes the transaction. */
+  setSubmissionGuard(guard: (() => Promise<void>) | null): void {
+    this.#submissionGuard = guard;
+  }
   subscribe(listener: (state: LaunchClientState) => void): () => void {
     this.#listeners.add(listener);
     listener(this.state);
@@ -337,27 +366,31 @@ export class LaunchMarketClient {
     const code = error instanceof Error ? error.message : 'MARKET_REQUEST_FAILED';
     const testMode = this.#state.config?.emailVerificationRequired === false;
     const accountRequired = testMode
-      ? 'Start a wallet test session to continue.'
+      ? 'Sign in with your wallet to continue.'
       : 'Sign in with your verified Google account to continue.';
     const messages: Record<string, string> = {
       WALLET_REJECTED: 'Wallet confirmation cancelled. No transaction was submitted.',
-      WALLET_WRONG_CHAIN: 'Switch your wallet to Robinhood Chain Testnet.',
+      WALLET_REQUEST_PENDING:
+        'Your wallet already has a request waiting. Open the wallet extension and complete or cancel it before trying again.',
+      WALLET_CHALLENGE_INVALID:
+        'The wallet sign-in message could not be validated. Reload this page to request a new message, and try again.',
+      WALLET_WRONG_CHAIN: 'Switch your wallet to the configured Robinhood Chain network.',
       WALLET_IDENTITY_CHANGED: 'Your wallet changed. Reconnect and review a new quote.',
       WALLET_SIMULATION_FAILED: 'The contract simulation failed. Refresh chain state and review a new quote.',
       MARKET_SESSION_REQUIRED: accountRequired,
       VERIFIED_ACCOUNT_REQUIRED: accountRequired,
       VERIFIED_EMAIL_REQUIRED: accountRequired,
       ACCOUNT_SESSION_INVALID: testMode
-        ? 'Your test session expired. Start a new wallet test session.'
+        ? 'Your wallet session expired. Sign in with your wallet again.'
         : 'Your account session expired. Sign in again before continuing.',
       TRUSTED_EMAIL_REQUIRED: accountRequired,
       NOT_DEPLOYED:
         'Contracts are not deployed yet. Claims, Mint, trading and Vault funding are unavailable.',
       LINKED_WALLET_REQUIRED: testMode
-        ? 'Start a test session with the connected wallet before continuing.'
+        ? 'Sign in with the connected wallet before continuing.'
         : 'Link the connected wallet to your verified account before continuing.',
       ACCOUNT_LINKAGE_CHANGED: testMode
-        ? 'Your wallet test session changed. Start your session and review again.'
+        ? 'Your wallet session changed. Sign in and review again.'
         : 'Your account or wallet linkage changed. Sign in, link your wallet and review again.',
       ALREADY_CLAIMED: 'This account or wallet has already claimed its AF-USDC.',
       CLAIM_LIMIT_REACHED: 'All 100 claims have been allocated.',
@@ -386,16 +419,25 @@ export class LaunchMarketClient {
         'The stock price or trading session changed or expired. Refresh and review a new stock trade.',
       STOCK_EXECUTION_UNINITIALIZED:
         'The chain stock price feed has not been initialized. The authorized keeper must publish a verified price and trading session.',
+      STOCK_REFERENCE_NOT_CONFIGURED:
+        'Verified stock market data and price publishing are unavailable. No deposit or stock transaction was sent.',
+      VAULT_RUN_EXECUTOR_ACTIVE:
+        'Use Stop and confirm removal of this Vault’s existing trading permission before depositing.',
       STOCK_EXECUTION_MARKET_CLOSED:
-        'The regular US stock market session is closed. Available Vault cash can still be withdrawn.',
+        'The regular US stock market session is closed. Full withdrawal of stock holdings requires an open session. Cash-only Vaults can still be closed.',
       STOCK_EXECUTION_STALE_REFERENCE:
         'The chain stock price has expired. A fresh verified price is required before trading.',
       STOCK_EXECUTION_STALE_CALENDAR:
         'The chain trading session has expired. A fresh verified session is required before trading.',
       STOCK_EXECUTION_PAUSED: 'The stock trading reserve is paused.',
       INSUFFICIENT_TEST_STOCK_RESERVE:
-        'The separate test stock reserve cannot settle this amount. No stock trade was submitted.',
+        'The stock reserve cannot settle this amount. No stock trade was submitted.',
       INSUFFICIENT_VAULT_BALANCE: 'This amount exceeds the available tracked Vault cash or stock holdings.',
+      INSUFFICIENT_VAULT_CAPACITY: 'This deposit exceeds your available AF-USDC or PASS capacity.',
+      PRINCIPAL_WITHDRAWAL_RESTRICTED: 'This withdrawal exceeds your available principal and profit.',
+      INVALID_TEST_SESSION_CHALLENGE:
+        'Wallet sign-in could not be verified. Request a new ownership message.',
+      WALLET_TEST_SESSION_DISABLED: 'Wallet sign-in is unavailable. Sign in with your verified account.',
     };
     // Read failures cannot release the lock held by an outstanding wallet confirmation.
     const identityExpired = [
@@ -446,6 +488,7 @@ export class LaunchMarketClient {
       throw new Error('ACCOUNT_LINKAGE_CHANGED');
   }
   invalidateWallet(): void {
+    this.#completedStreamOperations.clear();
     ++this.#generation;
     this.#invalidateIdentityReviews();
     const tx = this.#state.transaction;
@@ -460,6 +503,7 @@ export class LaunchMarketClient {
       stockReview: null,
       stockSnapshots: {},
       connecting: false,
+      walletSignIn: null,
       transaction: tx.hash && !terminalStates.has(tx.state) ? { ...tx, state: 'RECOVERY_REQUIRED' } : tx,
       notice:
         'Wallet or network changed. Reconnect to read your assets; existing assets stay with their original wallet.',
@@ -544,7 +588,8 @@ export class LaunchMarketClient {
     const owner = this.#state.owner;
     if (!owner || !this.#provider) throw new Error('WALLET_CONNECTION_REQUIRED');
     if (this.#state.busy) throw new Error('TRANSACTION_ALREADY_PENDING');
-    this.#update({ busy: true, error: null });
+    const signingAddress = getAddress(owner);
+    this.#update({ busy: true, error: null, notice: null, walletSignIn: 'CHECKING' });
     const generation = this.#generation;
     try {
       await this.#assertOwner(owner, generation);
@@ -552,41 +597,59 @@ export class LaunchMarketClient {
       const testSession =
         this.#state.config?.emailVerificationRequired === false &&
         this.#state.account?.emailVerified !== true;
-      const challenge = await this.#api<{ nonce: string; message: string; expiresAt: number }>(
+      const challenge = await this.#api<WalletSignInChallenge>(
         `${prefix}/wallet/${testSession ? 'test-challenge' : 'challenge'}`,
         { owner },
       );
+      if (
+        !challenge ||
+        typeof challenge.nonce !== 'string' ||
+        typeof challenge.message !== 'string' ||
+        !Number.isSafeInteger(challenge.expiresAt)
+      )
+        throw new Error('WALLET_CHALLENGE_INVALID');
       const account = /Link this wallet to AlphaForge account ([a-f0-9-]{36})\./.exec(challenge.message)?.[1];
       const issued = /^Issued At: (.+)$/m.exec(challenge.message)?.[1];
       const issuedAt = issued ? Date.parse(issued) / 1000 : NaN;
+      const challengeNow = challenge[walletChallengeTime]?.() ?? this.#now();
+      if (
+        !Number.isSafeInteger(issuedAt) ||
+        !Number.isSafeInteger(challengeNow) ||
+        challenge.expiresAt - issuedAt !== 300
+      )
+        throw new Error('WALLET_CHALLENGE_INVALID');
       const expected = testSession
-        ? `${new URL(this.#origin).host} wants you to sign in with your Ethereum account:\n${owner.toLowerCase()}\n\nSign in to AlphaForge wallet-only TESTNET mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${this.#origin}\nVersion: 1\nChain ID: ${LAUNCH_CHAIN_ID}\nNonce: ${challenge.nonce}\nIssued At: ${issued}\nExpiration Time: ${new Date(challenge.expiresAt * 1000).toISOString()}`
-        : `${new URL(this.#origin).host} wants you to link your Ethereum account:\n${owner.toLowerCase()}\n\nLink this wallet to AlphaForge account ${account}. This signature authorizes account linkage only. It does not move assets or authorize transactions.\n\nURI: ${this.#origin}\nVersion: 1\nChain ID: ${LAUNCH_CHAIN_ID}\nNonce: ${challenge.nonce}\nIssued At: ${issued}\nExpiration Time: ${new Date(challenge.expiresAt * 1000).toISOString()}`;
+        ? `${new URL(this.#origin).host} wants you to sign in with your Ethereum account:\n${signingAddress}\n\nSign in to AlphaForge wallet-only mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${this.#origin}\nVersion: 1\nChain ID: ${LAUNCH_CHAIN_ID}\nNonce: ${challenge.nonce}\nIssued At: ${issued}\nExpiration Time: ${new Date(challenge.expiresAt * 1000).toISOString()}`
+        : `${new URL(this.#origin).host} wants you to link your Ethereum account:\n${signingAddress}\n\nLink this wallet to AlphaForge account ${account}. This signature authorizes account linkage only. It does not move assets or authorize transactions.\n\nURI: ${this.#origin}\nVersion: 1\nChain ID: ${LAUNCH_CHAIN_ID}\nNonce: ${challenge.nonce}\nIssued At: ${issued}\nExpiration Time: ${new Date(challenge.expiresAt * 1000).toISOString()}`;
       if (
         (!testSession && !account) ||
         !/^[a-f0-9]{48}$/.test(challenge.nonce) ||
         challenge.message.length > 2048 ||
         challenge.message !== expected ||
         !Number.isSafeInteger(challenge.expiresAt) ||
-        challenge.expiresAt <= this.#now() ||
-        challenge.expiresAt - this.#now() > 300 ||
+        challenge.expiresAt <= challengeNow ||
+        challenge.expiresAt - challengeNow > 300 ||
         !Number.isSafeInteger(issuedAt) ||
-        issuedAt > this.#now() ||
-        issuedAt < this.#now() - 300
+        issuedAt > challengeNow ||
+        issuedAt < challengeNow - 300
       )
         throw new Error('WALLET_CHALLENGE_INVALID');
       await this.#assertOwner(owner, generation);
       let signature: unknown;
+      this.#update({ walletSignIn: 'AWAITING_SIGNATURE' });
       try {
         signature = await this.#provider.request({
           method: 'personal_sign',
-          params: [hexlify(toUtf8Bytes(challenge.message)), owner],
+          params: [hexlify(toUtf8Bytes(challenge.message)), signingAddress],
         });
       } catch (error) {
         if ((error as { code?: unknown })?.code === 4001)
           throw new Error('WALLET_REJECTED', { cause: error });
+        if ((error as { code?: unknown })?.code === -32002)
+          throw new Error('WALLET_REQUEST_PENDING', { cause: error });
         throw error;
       }
+      this.#update({ walletSignIn: 'VERIFYING' });
       await this.#assertOwner(owner, generation);
       if (
         typeof signature !== 'string' ||
@@ -603,13 +666,14 @@ export class LaunchMarketClient {
       await this.#assertOwner(owner, generation);
       this.#update({
         busy: false,
+        walletSignIn: null,
         notice: testSession
-          ? 'Your wallet test session is active. Email verification is disabled for this test phase. The sign-in signature only proves wallet control.'
+          ? 'You are signed in with your wallet. The sign-in signature proves wallet ownership.'
           : 'Your verified account is linked to this wallet. The sign-in signature only proves wallet control.',
       });
       await this.refresh();
     } catch (error) {
-      this.#update({ busy: false });
+      this.#update({ busy: false, walletSignIn: null });
       throw error;
     }
   }
@@ -749,7 +813,7 @@ export class LaunchMarketClient {
   ): Promise<{ gasReserveRaw: string; ethUsdPriceRaw?: string }> {
     const owner = this.#state.owner;
     if (!owner || !this.#provider || !actionable(this.#state, strategyId, operation, 'ETH'))
-      throw new Error('Connect your wallet and start its test session before using ETH Max.');
+      throw new Error('Connect your wallet and sign in before using ETH Max.');
     const generation = this.#generation,
       revision = this.#identityRevision;
     this.#assertIdentity(owner, revision, operation);
@@ -1098,7 +1162,8 @@ export class LaunchMarketClient {
       }
       let submission;
       try {
-        submission = await wallet.submit(factory.prepare(review, asAddress(owner)), () => {
+        submission = await wallet.submit(factory.prepare(review, asAddress(owner)), async () => {
+          await this.#submissionGuard?.();
           if (generation !== this.#generation || this.#state.owner?.toLowerCase() !== owner.toLowerCase())
             throw new Error('WALLET_IDENTITY_CHANGED');
           this.#assertIdentity(owner, identityRevision);
@@ -1231,7 +1296,8 @@ export class LaunchMarketClient {
       },
     });
     try {
-      const submission = await wallet.submit(factory.prepare(quote, asAddress(quote.owner)), () => {
+      const submission = await wallet.submit(factory.prepare(quote, asAddress(quote.owner)), async () => {
+        await this.#submissionGuard?.();
         this.#assertIdentity(quote.owner, identityRevision, quote.operation);
         this.#validateQuote(quote, request);
         if (this.#state.owner?.toLowerCase() !== quote.owner.toLowerCase())
@@ -1422,6 +1488,7 @@ export class LaunchMarketClient {
   async stream(update: MarketStreamUpdate): Promise<void> {
     validLocation(update.location);
     if (update.type === 'REORG') {
+      this.#completedStreamOperations.clear();
       ++this.#executorReviewEpoch;
       if (
         this.#state.transaction.executor &&
@@ -1457,6 +1524,45 @@ export class LaunchMarketClient {
       if (newerLocation(update.snapshot.location, this.#state.snapshot?.location ?? null))
         this.#update({ snapshot: update.snapshot });
     }
-    if (update.type === 'OPERATION') await this.refreshTransaction();
+    if (update.type === 'OPERATION') {
+      const operation = update.operation,
+        tx = this.#state.transaction;
+      const owner = this.#state.owner?.toLowerCase();
+      const hash =
+        typeof operation?.transactionHash === 'string' ? operation.transactionHash.toLowerCase() : null;
+      if (
+        !owner ||
+        typeof operation?.owner !== 'string' ||
+        operation.owner.toLowerCase() !== owner ||
+        tx.owner?.toLowerCase() !== owner ||
+        !(
+          (typeof operation.id === 'string' && operation.id === tx.id) ||
+          (hash && hash === tx.hash?.toLowerCase())
+        )
+      )
+        return;
+      const generation = this.#generation;
+      await this.refreshTransaction();
+      const current = this.#state.transaction;
+      if (
+        generation !== this.#generation ||
+        current.state !== 'COMPLETED' ||
+        !current.hash ||
+        current.owner?.toLowerCase() !== owner ||
+        current.hash.toLowerCase() !== hash
+      )
+        return;
+      const key = `${owner}:${hash}`;
+      if (this.#completedStreamOperations.has(key)) return;
+      this.#completedStreamOperations.add(key);
+      if (this.#completedStreamOperations.size > 128)
+        this.#completedStreamOperations.delete(this.#completedStreamOperations.values().next().value!);
+      try {
+        await this.refresh();
+      } catch (error) {
+        this.#completedStreamOperations.delete(key);
+        throw error;
+      }
+    }
   }
 }

@@ -17,6 +17,8 @@ export interface MarketSnapshotTarget {
 }
 /** Implement with the qualified deployed ABI and canonical RPC reads. It never signs or broadcasts. */
 export interface MarketChain {
+  /** Fresh canonical RPC head, independent of the historical event scanner. */
+  head?(): Promise<{ readonly number: string; readonly hash: string }>;
   snapshot(at?: MarketSnapshotTarget): Promise<MarketSnapshot>;
   wallet(owner: string): Promise<MarketWalletSnapshot>;
   quoteAmm(

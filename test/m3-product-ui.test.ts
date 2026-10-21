@@ -81,7 +81,7 @@ test('My Account renders wallet ETH and Pass independently with an address conne
   chain.network.status = 'WRONG';
   const wrong = pages.account('trades');
   assert.doesNotMatch(wrong, /1\.250000000000000001|>12<\/strong>/);
-  assert.match(wrong, /Switch to Robinhood Chain Testnet/);
+  assert.match(wrong, /Switch to the configured Robinhood Chain network/);
 });
 
 test('page extension preserves the trade page without a chain diagnostics panel', () => {
@@ -136,9 +136,9 @@ test('strategy shell separates fixture content from unavailable Testnet capabili
   });
 
   assert.match(html, /trend/);
-  assert.match(html, /FIXTURE/);
-  assert.match(html, /TESTNET/);
-  assert.match(html, new RegExp(ROBINHOOD_CHAIN_TESTNET.name));
+  assert.match(html, /STRATEGY REFERENCE/);
+  assert.doesNotMatch(html, /TESTNET|Testnet/);
+  assert.match(html, /Robinhood Chain/);
   assert.match(html, new RegExp(String(ROBINHOOD_CHAIN_TESTNET.chainId)));
   assert.doesNotMatch(html, /CHAIN CONFIRMED/);
   assert.equal(M3_CANONICAL_STRATEGY_ID, 'trend');
@@ -160,7 +160,7 @@ test('historical local strategy identities remain isolated from the canonical pr
     });
     assert.match(html, /HISTORICAL LOCAL IDENTITY/);
     assert.match(html, new RegExp(`${strategyId} remains isolated from trend`));
-    assert.match(html, /No local balance or ownership is used as a Testnet holding/);
+    assert.match(html, /Local records do not establish chain balances or ownership/);
   }
 });
 
@@ -169,7 +169,7 @@ test('local account identity remains separate from wallet identity', () => {
 
   assert.match(html, /AlphaForge account/);
   assert.match(html, /alice/);
-  assert.match(html, /LOCAL SIMULATION/);
+  assert.match(html, /LOCAL RECORDS/);
   assert.match(html, /Wallet/);
   assert.match(html, /DISCONNECTED/);
   assert.match(html, /Account and wallet are separate identities/);
@@ -188,7 +188,7 @@ test('every required network status has distinct human-readable output', () => {
   const messages = NETWORK_STATUSES.map((status) => renderNetworkStatus(status));
 
   assert.equal(new Set(messages).size, NETWORK_STATUSES.length);
-  assert.match(renderNetworkStatus('CORRECT'), /required Robinhood Chain Testnet/);
+  assert.match(renderNetworkStatus('CORRECT'), /required Robinhood Chain network/);
   assert.match(renderNetworkStatus('WRONG'), /Wrong network/);
   assert.match(renderNetworkStatus('SWITCH_REJECTED'), /rejected/);
   assert.match(renderNetworkStatus('RPC_UNAVAILABLE'), /RPC is unavailable/);
@@ -493,7 +493,7 @@ test('soft-ready chain state is shown without claiming finality', () => {
   assert.match(html, /three confirmations/i);
   assert.match(html, /L1 finality remains unknown/i);
   assert.doesNotMatch(html, /finalized/i);
-  assert.match(html, /Mock provider reads are active/);
+  assert.match(html, /Local provider reads are active/);
   assert.doesNotMatch(html, /Canonical chain reads are live/);
 });
 
@@ -590,8 +590,8 @@ test('degraded indexer preserves owner withdraw and close through live RPC simul
 
   assert.match(html, /INDEXER DEGRADED/);
   assert.match(html, /live RPC simulation/i);
-  assert.match(html, /INJECTED MOCK/);
-  assert.match(html, /no real rights or funds/i);
+  assert.match(html, /Local provider records/);
+  assert.match(html, /do not authorize asset transfers/i);
   assert.match(html, /<button[^>]*data-chain-action="withdraw"[^>]*>Withdraw<\/button>/);
   assert.match(html, /<button[^>]*data-chain-action="close"[^>]*>Close<\/button>/);
   assert.match(html, /<button[^>]*data-chain-action="deposit"[^>]*disabled[^>]*>Deposit<\/button>/);
@@ -977,22 +977,22 @@ test('account connects a visibly mock wallet backed by the demo trading ledger',
     },
   );
   const html = pages.account('trades');
-  assert.match(html, /Mock wallet/);
+  assert.match(html, /Local wallet/);
   assert.match(html, /0x0000…de00/);
   assert.match(html, /9965\.68/);
   assert.match(html, /Ridgeline · Trend Following/);
   assert.match(html, />10<\/strong>/);
-  assert.match(html, /Simulated balances/);
+  assert.match(html, /Local balances/);
   assert.match(html, /<details[^>]*data-wallet-position="trend"/);
   assert.match(html, /<summary[^>]*wallet-pass-row/);
   assert.match(html, /data-wallet-funding-slot/);
   assert.match(html, /Use Pass/);
   assert.match(html, /Frozen \(in use\) 2\.5 · Available 7\.5/);
   assert.match(html, /Allocated 2\.5 USDC/);
-  assert.match(html, /Mock USDC · Available funds/);
+  assert.match(html, /USDC · Available funds/);
   assert.match(html, /9997\.5/);
   assert.match(html, /href="#\/trade\/trend"/);
-  assert.match(html, /1 mock strategy/);
+  assert.match(html, /1 strategy/);
   assert.match(html, /1 ETH = 2688 USDC/);
   assert.doesNotMatch(html, /Buy or sell Pass/);
   assert.equal((html.match(/<button\b/g) ?? []).length, 1);
@@ -1009,7 +1009,7 @@ test('Account invites an explicit Mock Wallet connection without showing local v
     },
   );
   const html = pages.account('trades');
-  assert.match(html, /data-wallet-choice="mock"[^>]*>[^]*Connect Mock Wallet/);
+  assert.match(html, /data-wallet-choice="mock"[^>]*>[^]*Open local wallet/);
   assert.match(html, /Pass holdings/);
   assert.match(html, /Ridgeline · Prism · Echo/);
   assert.match(html, /Choose Browser Wallet/);
@@ -1059,7 +1059,7 @@ test('Pass Holdings shows a collection of independently allocated mock strategy 
   );
   const html = pages.account('trades');
   assert.match(html, /2,250 <span>PASS/);
-  assert.match(html, /3 mock strategies/);
+  assert.match(html, /3 strategies/);
   for (const id of ['trend', 'factor', 'mean']) {
     assert.match(html, new RegExp(`data-wallet-position="${id}"`));
     assert.match(html, new RegExp(`href="#/trade/${id}"`));

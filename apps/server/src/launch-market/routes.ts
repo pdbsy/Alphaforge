@@ -1,6 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ServerResponse } from 'node:http';
+import type { CommunityStore } from '../../../../packages/launch-market/src/community.ts';
+import type { CreatorStrategyStore } from '../../../../packages/launch-market/src/creator.ts';
+import { registerCommunityRoutes } from './community-routes.ts';
+import { registerCreatorRoutes } from './creator-routes.ts';
+import { registerAutomationRoutes, type StockAutomationOptions } from './automation-routes.ts';
+import { registerVaultRunRoutes, type VaultRunOptions } from './vault-run-routes.ts';
+import { registerPaperVaultRoutes, type PaperVaultValueOptions } from './paper-vault-routes.ts';
+import type { PaperMarketDataCache } from '../launch-market-adapters/paper-market-data.ts';
+import type { VaultValuations } from '../launch-market-adapters/vault-valuation.ts';
 import type { LaunchMarketService } from '../../../../packages/launch-market/src/service.ts';
+import {
+  registerOperatorStockDataRoutes,
+  type OperatorStockDataOptions,
+} from './operator-stock-data-routes.ts';
 import {
   LaunchMarketError,
   type QuoteRequest,
@@ -16,6 +29,16 @@ export interface LaunchMarketRoutesOptions {
     request: FastifyRequest,
   ) => Promise<TrustedEmailIdentity | null> | TrustedEmailIdentity | null;
   readonly verificationRequired?: () => boolean | Promise<boolean>;
+  readonly community?: CommunityStore;
+  readonly creators?: CreatorStrategyStore;
+  readonly canCommunityWrite?: () => boolean;
+  readonly automation?: StockAutomationOptions;
+  readonly vaultRun?: VaultRunOptions;
+  readonly vaultValuations?: Pick<VaultValuations, 'read'>;
+  readonly operatorStockData?: OperatorStockDataOptions;
+  readonly paperVault?: PaperVaultValueOptions;
+  readonly paperMarketData?: Pick<PaperMarketDataCache, 'read' | 'status'>;
+  readonly rpcProvider?: 'OFFICIAL_PUBLIC';
 }
 const testSessionCookie = '__Host-af_market_test';
 const ownerSchema = { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', maxLength: 42 };
@@ -98,10 +121,108 @@ export function registerLaunchMarketRoutes(app: FastifyInstance, options: Launch
       throw routeError(error);
     }
   };
+  const resolveAccount = async (request: FastifyRequest) => (await authenticated(request))?.current ?? null;
+  if (options.community) {
+    const community = options.community;
+    registerCommunityRoutes(app, {
+      store: community,
+      origin: service.options.store.origin,
+      resolveAccount,
+      now: service.now,
+      ...(options.canCommunityWrite ? { canWrite: options.canCommunityWrite } : {}),
+    });
+    if (options.creators)
+      registerCreatorRoutes(app, {
+        store: options.creators,
+        origin: service.options.store.origin,
+        resolveAccount,
+        now: service.now,
+        canWrite: options.canCommunityWrite ?? (() => true),
+        consumeRate: (key, limit, window, at) => community.consumeRate(key, limit, window, at),
+      });
+    if (options.automation)
+      registerAutomationRoutes(app, {
+        ...options.automation,
+        origin: service.options.store.origin,
+        resolveAccount,
+        now: service.now,
+        canWrite: options.canCommunityWrite ?? (() => true),
+        consumeRate: (key, limit, window, at) => community.consumeRate(key, limit, window, at),
+      });
+    if (options.vaultRun)
+      registerVaultRunRoutes(app, {
+        ...options.vaultRun,
+        origin: service.options.store.origin,
+        resolveAccount,
+        now: service.now,
+        canWrite: options.canCommunityWrite ?? (() => true),
+        consumeRate: (key, limit, window, at) => community.consumeRate(key, limit, window, at),
+      });
+    if (options.operatorStockData)
+      registerOperatorStockDataRoutes(app, {
+        ...options.operatorStockData,
+        origin: service.options.store.origin,
+        resolveAccount,
+        now: service.now,
+        canWrite: options.canCommunityWrite ?? (() => true),
+        consumeRate: (key, limit, window, at) => community.consumeRate(key, limit, window, at),
+      });
+    if (options.paperVault)
+      registerPaperVaultRoutes(app, {
+        ...options.paperVault,
+        resolveAccount,
+        now: service.now,
+        consumeRate: (key, limit, window, at) => community.consumeRate(key, limit, window, at),
+      });
+    if (options.vaultValuations && !options.paperVault) {
+      const valuations = options.vaultValuations;
+      app.get<{ Params: { strategyId: 'TSLA' | 'AMZN' }; Querystring: { fresh?: '1' } }>(
+        '/api/launch-market/vault-values/:strategyId',
+        {
+          schema: {
+            querystring: {
+              type: 'object',
+              additionalProperties: false,
+              properties: { fresh: { type: 'string', enum: ['1'] } },
+            },
+            params: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['strategyId'],
+              properties: { strategyId: { enum: ['TSLA', 'AMZN'] } },
+            },
+          },
+        },
+        async (request) => {
+          const owner = (await resolveAccount(request))?.wallet;
+          if (!owner) throw new LaunchMarketError('LINKED_WALLET_REQUIRED', 401);
+          community.consumeRate('vault-values:' + owner, 120, 60, service.now());
+          // The account resolver selects the wallet; callers cannot pass someone else's owner address.
+          return valuations.read(owner, request.params.strategyId, { fresh: request.query.fresh === '1' });
+        },
+      );
+    }
+  } else if (
+    options.creators ||
+    options.automation ||
+    options.vaultRun ||
+    options.vaultValuations ||
+    options.paperVault ||
+    options.operatorStockData
+  )
+    throw new LaunchMarketError('COMMUNITY_STORE_REQUIRED', 503);
   app.get('/api/launch-market/config', async () => ({
     ...service.config(),
     emailVerificationRequired: await verificationRequired(),
+    ...(options.paperVault ? { vaultExecutionMode: 'PAPER' } : {}),
+    ...(options.rpcProvider ? { rpcProvider: options.rpcProvider } : {}),
   }));
+  if (options.paperMarketData)
+    app.get(
+      '/api/launch-market/stock-data',
+      { schema: { querystring: { type: 'object', additionalProperties: false, properties: {} } } },
+      async () => options.paperMarketData!.read(),
+    );
   app.get('/api/launch-market/snapshot', async () => execute(() => service.snapshot()));
   app.get('/api/launch-market/eth-reference', async () => execute(() => service.ethReference()));
   app.get('/api/launch-market/account', async (request) =>
@@ -212,6 +333,21 @@ export function registerLaunchMarketRoutes(app: FastifyInstance, options: Launch
       if (!session) throw new LaunchMarketError('MARKET_SESSION_REQUIRED', 401);
       return { csrfToken: session.csrfToken, identityKind: 'WALLET_TEST', emailVerificationRequired: false };
     }),
+  );
+  app.post<{ Body: { allDevices: boolean } }>(
+    '/api/launch-market/wallet/logout',
+    { schema: { body: body({ allDevices: { type: 'boolean' } }) } },
+    async (request, reply) =>
+      execute(() => {
+        if (request.headers.origin !== service.options.store.origin)
+          throw new LaunchMarketError('INVALID_REQUEST_ORIGIN', 403);
+        const token = request.cookies?.[testSessionCookie],
+          csrf = request.headers['x-csrf-token'];
+        if (!token || typeof csrf !== 'string') throw new LaunchMarketError('MARKET_SESSION_REQUIRED', 401);
+        service.options.store.revokeWalletTestSession(token, csrf, service.now(), request.body.allDevices);
+        reply.clearCookie(testSessionCookie, { path: '/', secure: true, httpOnly: true, sameSite: 'strict' });
+        return { signedOut: true };
+      }),
   );
   app.post<{ Body: QuoteRequest }>(
     '/api/launch-market/quote',

@@ -35,7 +35,10 @@ function source(
           ? options.holiday
             ? []
             : [{ date, open: '09:30', close }]
-          : { quote: { t: options.quoteAt ?? at, bp: '100.20', ap: '100.40' } };
+          : {
+              symbol: url.includes('/TSLA/') ? 'TSLA' : 'AMZN',
+              quote: { t: options.quoteAt ?? at, bp: '100.20', ap: '100.40' },
+            };
       return new Response(JSON.stringify(result));
     },
   });
@@ -124,7 +127,10 @@ test('source timestamps advancing during a data read are checked against the com
         return new Response(JSON.stringify([{ date: '2026-10-09', open: '09:30', close: '16:00' }]));
       now++;
       return new Response(
-        JSON.stringify({ quote: { t: new Date(now * 1000).toISOString(), bp: '100.20', ap: '100.40' } }),
+        JSON.stringify({
+          symbol: 'AMZN',
+          quote: { t: new Date(now * 1000).toISOString(), bp: '100.20', ap: '100.40' },
+        }),
       );
     },
   });
@@ -154,7 +160,10 @@ test('a stock quote that arrives after regular close cannot become an executable
         return new Response(JSON.stringify([{ date: '2026-10-09', open: '09:30', close: '16:00' }]));
       now++;
       return new Response(
-        JSON.stringify({ quote: { t: new Date(now * 1000).toISOString(), bp: '100.20', ap: '100.40' } }),
+        JSON.stringify({
+          symbol: 'TSLA',
+          quote: { t: new Date(now * 1000).toISOString(), bp: '100.20', ap: '100.40' },
+        }),
       );
     },
   });

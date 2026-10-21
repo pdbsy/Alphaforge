@@ -179,7 +179,7 @@ class ChainFixture implements MarketChain {
     };
   }
 }
-async function fixture() {
+async function fixture({ indexedSnapshots = false } = {}) {
   const folder = mkdtempSync(join(tmpdir(), 'alphaforge-launch-service-')),
     store = new LaunchMarketStore(join(folder, 'market.sqlite'), 'https://www.ikol.top');
   const owner = new Wallet(h(10)),
@@ -196,6 +196,7 @@ async function fixture() {
     clock = { now: 1000 },
     reference = { ethUsdPriceRaw: '2000000000', observedAt: 1000 };
   const service = new LaunchMarketService({
+    indexedSnapshots,
     manifest,
     store,
     chain,
@@ -716,3 +717,55 @@ test('unavailable trusted policy keeps wallet test login and existing test crede
     f.close();
   }
 });
+
+for (const directHead of [true, false])
+  test(`transaction confirmation uses fresh canonical head while indexed history lags: directHead=${directHead}`, async () => {
+    const f = await fixture({ indexedSnapshots: true });
+    try {
+      const quote = await f.service.quote(f.request, f.account.id),
+        txHash = h(201);
+      f.chain.observedTransaction = {
+        ...quote.transaction,
+        hash: txHash,
+        from: f.owner.address,
+        chainId: 46630,
+      };
+      const operation = await f.service.submit(f.account.id, quote.id, txHash, f.owner.address);
+      f.service.publish(snapshot(8), h(7), null);
+      f.chain.observedReceipt = {
+        transactionHash: txHash,
+        blockNumber: '10',
+        blockHash: h(10),
+        status: 'SUCCESS',
+      };
+      const chain: MarketChain = f.chain;
+      if (directHead)
+        chain.head = async () => ({
+          number: '0x' + BigInt(f.chain.current.location.blockNumber).toString(16),
+          hash: f.chain.current.location.blockHash,
+        });
+      f.chain.current = snapshot(11);
+      assert.equal((await f.service.operation(f.account.id, operation.id)).confirmations, 2);
+      f.chain.current = snapshot(12);
+      const completed = await f.service.operation(f.account.id, operation.id);
+      assert.equal(completed.state, 'COMPLETED');
+      assert.equal(completed.confirmations, 3);
+      assert.equal(completed.location!.blockNumber, '10');
+      assert.equal(
+        (await f.service.snapshot()).location.blockNumber,
+        '8',
+        'receipt checks never advance the event scanner',
+      );
+      if (directHead) {
+        chain.head = async () => ({ number: '0xc', hash: h(999) });
+        await assert.rejects(f.service.operation(f.account.id, operation.id), /NON_CANONICAL_MARKET_HEAD/);
+        chain.head = async () => ({ number: '0xc', hash: h(12) });
+      }
+      f.chain.observedReceipt = { ...f.chain.observedReceipt, blockHash: h(999) };
+      assert.equal((await f.service.operation(f.account.id, operation.id)).state, 'REORGED');
+      f.chain.observedReceipt = { ...f.chain.observedReceipt, blockHash: h(10), status: 'REVERTED' };
+      assert.equal((await f.service.operation(f.account.id, operation.id)).state, 'REVERTED');
+    } finally {
+      f.close();
+    }
+  });

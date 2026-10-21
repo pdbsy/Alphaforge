@@ -312,7 +312,7 @@ test('MARKET_SESSION_REQUIRED invalidates an unsent executor review without eras
     assert.equal(f.client.state.account, null);
     assert.equal(f.client.state.wallet!.accountId, null);
     assert.equal(f.client.state.executorReview, null);
-    assert.match(f.client.state.error!, /wallet test session/);
+    assert.match(f.client.state.error!, /wallet session|Sign in with your wallet/);
     if (submitted) {
       assert.equal(f.client.state.transaction.hash, HASH);
       assert.equal(f.journal.getItem(executorJournalKey), journal);

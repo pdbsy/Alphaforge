@@ -182,7 +182,7 @@ function chain(rpc: RpcFixture): MarketChain {
     },
   };
 }
-function fixture(maxBlocksPerPoll = 500) {
+function fixture(maxBlocksPerPoll = 500, pollIntervalMs = 5000) {
   const dir = mkdtempSync(join(tmpdir(), 'af-market-index-'));
   const rpc = new RpcFixture();
   const createService = () =>
@@ -203,6 +203,7 @@ function fixture(maxBlocksPerPoll = 500) {
     provider: rpc,
     service,
     maxBlocksPerPoll,
+    pollIntervalMs,
   });
   return {
     dir,
@@ -1086,3 +1087,50 @@ test(
     }
   },
 );
+
+test('30-second shared index exposes canonical proof anchors without per-user RPC reads', async () => {
+  const f = fixture(500, 30000);
+  try {
+    assert.deepEqual(f.indexer.canonicalAnchor('2'), { known: false, blockHash: null });
+    await f.indexer.poll();
+    const calls = f.rpc.calls;
+    for (let viewer = 0; viewer < 100; viewer++)
+      assert.deepEqual(f.indexer.canonicalAnchor('2'), { known: true, blockHash: f.rpc.hash(2) });
+    assert.deepEqual(f.indexer.canonicalAnchor('3'), { known: false, blockHash: null });
+    assert.equal(f.rpc.calls, calls);
+    const previous = f.rpc.hash(2);
+    f.rpc.fork = 1;
+    f.rpc.height = 3;
+    const entered = pendingGate(),
+      gate = pendingGate();
+    f.rpc.beforeSend = async (method, params) => {
+      if (method === 'eth_getBlockByNumber' && params[0] === '0x2') {
+        f.rpc.beforeSend = null;
+        entered.release();
+        await gate.promise;
+      }
+    };
+    const poll = f.indexer.poll();
+    await entered.promise;
+    const duringRewindCalls = f.rpc.calls;
+    let completed = false;
+    const stableRead = f.indexer
+      .readStableHistory(() => f.indexer.canonicalAnchor('2'))
+      .then((value) => {
+        completed = true;
+        return value;
+      });
+    for (let viewer = 0; viewer < 100; viewer++)
+      assert.deepEqual(f.indexer.canonicalAnchor('2'), { known: false, blockHash: null });
+    await yieldEventLoop();
+    assert.equal(completed, false, 'confirmed SQL values wait for the existing rewind');
+    assert.equal(f.rpc.calls, duringRewindCalls, 'viewers do not start a separate chain read');
+    gate.release();
+    await poll;
+    assert.notEqual(f.rpc.hash(2), previous);
+    assert.deepEqual(await stableRead, { known: true, blockHash: f.rpc.hash(2) });
+    assert.deepEqual(f.indexer.canonicalAnchor('2'), { known: true, blockHash: f.rpc.hash(2) });
+  } finally {
+    await f.cleanup();
+  }
+});

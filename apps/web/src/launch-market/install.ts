@@ -5,7 +5,11 @@ import { actionable, escapeHtml, inputRaw } from './presentation.ts';
 import type { LaunchClientState, MarketOperation, PaymentAsset, StrategyId } from './model.ts';
 import { installOrderShortcuts, maxShortcutAmount, shortcutPresets } from './order-shortcuts.ts';
 import { installPaymentEstimates, estimatePassPayment } from './payment-estimate.ts';
-import { installActionAccess } from './action-access.ts';
+import { actionAccess, installActionAccess } from './action-access.ts';
+import { VaultActionsController } from './vault-actions.ts';
+import { installProductPageCleanup } from '../product-pages.ts';
+import { VaultValuationController } from './vault-valuation.ts';
+import { createCommunityApi } from '../community/client.ts';
 import {
   renderAccount,
   renderClaim,
@@ -59,6 +63,8 @@ export async function installLaunchMarket(
   provider?: Eip1193Provider,
   client = new LaunchMarketClient({ ...(provider ? { provider } : {}) }),
   localAccount = host.pages.account,
+  createVaultActions = (launch: LaunchMarketClient) =>
+    new VaultActionsController(launch, { api: createCommunityApi() }),
 ): Promise<LaunchMarketClient | null> {
   if (!(await client.initialize())) return null;
   const activity = new MarketActivityClient({ enabled: client.state.config?.deployment === 'CONFIGURED' });
@@ -71,8 +77,17 @@ export async function installLaunchMarket(
     },
     AMZN: { operation: 'BUY', asset: 'ETH', amount: '', slippageBps: 100 },
   };
+  const vaultActions = createVaultActions(client);
+  const valuations: { current?: VaultValuationController } = {};
   const amounts = new Map<string, string>();
   const vaultAmounts = new Map<string, string>();
+  const openHoldings = new Set<StrategyId>();
+  let depositIntent: {
+    owner: string | null;
+    strategyId: StrategyId;
+    amount: string;
+    cancelled: boolean;
+  } | null = null;
   const vaultIdentity = (state: LaunchClientState) =>
     [
       state.owner?.toLowerCase(),
@@ -106,7 +121,7 @@ export async function installLaunchMarket(
       return `${renderTrade(client.state, strategy, forms[strategy])}${renderActivity(activity.state[strategy], client.state.config?.deployment === 'CONFIGURED', client.state.config?.manifest?.strategies[strategy].pass)}`;
     };
     host.pages.rankings = () =>
-      `<div class="wrap inner-page"><span class="section-label">ONCHAIN TEST MARKET</span><h1>Market activity</h1><p>Strategy performance is separate from PASS market prices. Verified trade history will appear as chain events are indexed.</p>${renderMarket(client.state)}</div>`;
+      `<div class="wrap inner-page"><span class="section-label">STRATEGY MARKET</span><h1>Market activity</h1><p>Strategy performance is separate from PASS market prices. Verified trade history will appear as chain events are indexed.</p>${renderMarket(client.state)}</div>`;
   }
   // Financial account routes must stay connected even when the original home/Trade design is retained.
   // Existing account links use passes/funds; keep those aliases on the same chain-backed pages.
@@ -118,10 +133,18 @@ export async function installLaunchMarket(
         client.state,
         Object.fromEntries(vaultAmounts),
         selected === 'TSLA' || selected === 'AMZN' ? selected : undefined,
+        vaultActions.state,
+        valuations.current?.state,
       );
     }
-    if (['saved', 'notes', 'settings'].includes(tab)) return localAccount(tab);
-    return renderAccount(client.state);
+    if (['saved', 'notes', 'settings', 'creator'].includes(tab)) return localAccount(tab);
+    return renderAccount(
+      client.state,
+      Object.fromEntries(vaultAmounts),
+      [...openHoldings],
+      vaultActions.state,
+      valuations.current?.state,
+    );
   };
   host.launchState = client.state;
   host.launchForms = forms;
@@ -141,7 +164,7 @@ export async function installLaunchMarket(
         state.owner &&
         state.config?.deployment === 'CONFIGURED' &&
         !state.wallet?.accountId
-          ? `<p><a class="text-link" href="#/account/trades">${state.config.emailVerificationRequired === false && !state.account?.emailVerified ? 'Start test session' : 'Link verified account'} ↗</a></p>`
+          ? `<p><a class="text-link" href="#/account/trades">${state.config.emailVerificationRequired === false && !state.account?.emailVerified ? 'Continue with wallet' : 'Link verified account'} ↗</a></p>`
           : '';
       return `${notice}${accountLink}${renderQuote(state)}`;
     },
@@ -188,15 +211,16 @@ export async function installLaunchMarket(
     },
   };
   const status = document.querySelector('.topline-status');
-  if (status) status.textContent = 'Robinhood Chain Testnet · Test assets';
+  if (status) status.textContent = 'Robinhood Chain';
   const footer = document.querySelector('.footer-bottom > span');
   if (footer)
     footer.textContent =
       client.state.config?.deployment === 'CONFIGURED'
-        ? 'On-chain test assets · Wallet-authorized settlement'
-        : 'Testnet market · Asset contracts not deployed';
+        ? 'Wallet-authorized settlement'
+        : 'Market contracts not deployed';
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>('[data-nav="trade"]'))
     anchor.href = '#/trade/tsla';
+  installProductPageCleanup(() => host.app.render());
   const render = () => {
     const active = document.activeElement as HTMLInputElement | null;
     const address = active?.closest?.<HTMLFormElement>('[data-launch-vault-order]')?.dataset.vault;
@@ -204,9 +228,11 @@ export async function installLaunchMarket(
       active?.name === 'amount' &&
       address &&
       renderedIdentity === draftIdentity &&
-      client.state.wallet?.vaults.some(
-        (vault) => vault.status === 'OPEN' && vault.address.toLowerCase() === address,
-      );
+      (address === 'new:TSLA' ||
+        address === 'new:AMZN' ||
+        client.state.wallet?.vaults.some(
+          (vault) => vault.status === 'OPEN' && vault.address.toLowerCase() === address,
+        ));
     const selection = restore
       ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection }
       : null;
@@ -222,8 +248,11 @@ export async function installLaunchMarket(
       if (selection.start !== null && selection.end !== null)
         input?.setSelectionRange(selection.start, selection.end, selection.direction ?? undefined);
     }
+    valuations.current?.sync();
   };
+  vaultActions.subscribe(render);
   activity.subscribe(render);
+  void vaultActions.refresh().catch((error: unknown) => client.setError(error));
   const activeTrade = () => {
     const route = location.hash.split('/');
     const id = route[1] === 'trade' ? route[2]?.toUpperCase() : null;
@@ -240,18 +269,48 @@ export async function installLaunchMarket(
   let previousTslaState = client.state.snapshot?.markets.TSLA.state;
   let shortcutRevision = 0;
   client.subscribe((state) => {
+    if (depositIntent && !depositIntent.cancelled) {
+      if (depositIntent.owner && state.owner?.toLowerCase() !== depositIntent.owner)
+        depositIntent.cancelled = true;
+      else if (state.owner) depositIntent.owner = state.owner.toLowerCase();
+    }
     const identity = vaultIdentity(state);
     if (identity !== draftIdentity) {
       ++shortcutRevision;
       vaultAmounts.clear();
+      if (depositIntent?.owner && !depositIntent.cancelled) {
+        const vault = state.wallet?.vaults.find(
+          (item) => item.strategyId === depositIntent!.strategyId && item.status === 'OPEN',
+        );
+        vaultAmounts.set(
+          vault?.address.toLowerCase() ?? `new:${depositIntent.strategyId}`,
+          depositIntent.amount,
+        );
+      }
+      openHoldings.clear();
       vaultSubmission = null;
       draftIdentity = identity;
+      vaultActions.bind();
+      host.app.closeDialog();
+      void vaultActions.refresh().catch((error: unknown) => client.setError(error));
     }
     const openVaults = new Set(
       state.wallet?.vaults
         .filter((vault) => vault.status === 'OPEN')
         .map((vault) => vault.address.toLowerCase()),
     );
+    for (const strategy of ['TSLA', 'AMZN'] as const) {
+      const created = state.wallet?.vaults.find(
+        (vault) => vault.status === 'OPEN' && vault.strategyId === strategy,
+      );
+      const previousKey = `new:${strategy}`;
+      const draft = vaultAmounts.get(previousKey);
+      if (created && draft !== undefined) {
+        if (!vaultAmounts.has(created.address.toLowerCase()))
+          vaultAmounts.set(created.address.toLowerCase(), draft);
+        vaultAmounts.delete(previousKey);
+      } else if (!created) openVaults.add(previousKey);
+    }
     for (const address of vaultAmounts.keys()) if (!openVaults.has(address)) vaultAmounts.delete(address);
     if (vaultSubmission && !openVaults.has(vaultSubmission.address)) vaultSubmission = null;
     const tx = state.transaction;
@@ -294,11 +353,31 @@ export async function installLaunchMarket(
     render();
   });
 
+  document.addEventListener(
+    'toggle',
+    (event) => {
+      const holding = event.target as HTMLDetailsElement | null;
+      const strategy = holding?.dataset?.launchPosition;
+      if (strategy !== 'TSLA' && strategy !== 'AMZN') return;
+      // Ignore toggle events from nodes replaced by a refresh.
+      if (holding?.isConnected === false) return;
+      if (holding?.open) openHoldings.add(strategy);
+      else openHoldings.delete(strategy);
+      valuations.current?.sync();
+    },
+    true,
+  );
+
   document.addEventListener('click', (event) => {
     const target = (event.target as Element | null)?.closest<HTMLElement>(
-      '[data-launch-connect],[data-launch-wallet-browser],[data-launch-refresh],[data-launch-bind],[data-launch-bind-confirm],[data-launch-side],[data-launch-clear],[data-launch-confirm],[data-launch-claim],[data-launch-create-vault],[data-launch-vault-close],[data-launch-stock-refresh],[data-launch-stock-buy],[data-launch-stock-sell],[data-launch-executor-refresh],[data-launch-executor-revoke],[data-launch-executor-confirm],[data-launch-shortcut]',
+      '[data-launch-connect],[data-launch-wallet-browser],[data-launch-refresh],[data-launch-bind],[data-launch-bind-confirm],[data-launch-side],[data-launch-clear],[data-launch-confirm],[data-launch-claim],[data-launch-create-vault],[data-launch-vault-close],[data-launch-executor-confirm],[data-launch-vault-stop],[data-launch-vault-withdraw],[data-launch-vault-recover],[data-launch-shortcut]',
     );
     if (!target || target.hasAttribute('disabled')) return;
+    if (
+      depositIntent &&
+      (target.hasAttribute('data-launch-vault-stop') || target.hasAttribute('data-launch-vault-withdraw'))
+    )
+      depositIntent.cancelled = true;
     if (target.hasAttribute('data-launch-shortcut')) {
       const form = target.closest<HTMLFormElement>('[data-launch-order]');
       const strategy = form?.dataset.strategy;
@@ -360,7 +439,7 @@ export async function installLaunchMarket(
     }
     if (target.hasAttribute('data-launch-connect')) {
       host.app.openDialog(
-        '<span class="section-label">CONNECT YOUR WALLET</span><h2>Connect Wallet</h2><p>Choose your browser wallet to continue.</p><div class="wallet-options"><button class="primary-btn" data-launch-wallet-browser>Browser Wallet <span>Robinhood Chain Testnet</span></button></div><p class="small muted">On mobile, open this page in your wallet’s browser.</p><p class="small muted">Use Robinhood Chain Testnet (chain ID 46630). Native test ETH pays gas; AF-USDC does not pay gas.</p><p><a class="text-link" href="https://docs.robinhood.com/chain/add-network-to-wallet/" target="_blank" rel="noopener noreferrer">Set up the Testnet network ↗</a> <a class="text-link" href="https://faucet.testnet.chain.robinhood.com/" target="_blank" rel="noopener noreferrer">Get test ETH from the official faucet ↗</a></p>',
+        '<span class="section-label">CONNECT YOUR WALLET</span><h2>Connect Wallet</h2><p>Choose your browser wallet to continue.</p><div class="wallet-options"><button class="primary-btn" data-launch-wallet-browser>Browser Wallet <span>Robinhood Chain</span></button></div><p class="small muted">On mobile, open this page in your wallet’s browser.</p><p class="small muted">ETH pays gas; AF-USDC does not pay gas.</p><p><a class="text-link" href="https://docs.robinhood.com/chain/add-network-to-wallet/" target="_blank" rel="noopener noreferrer">Set up your wallet ↗</a> <a class="text-link" href="https://faucet.testnet.chain.robinhood.com/" target="_blank" rel="noopener noreferrer">Get ETH from the official faucet ↗</a></p>',
       );
     } else if (target.hasAttribute('data-launch-wallet-browser')) {
       host.app.closeDialog();
@@ -371,48 +450,51 @@ export async function installLaunchMarket(
         client.state.account?.emailVerified !== true;
       host.app.openDialog(
         testSession
-          ? '<span class="section-label">WALLET TEST SESSION</span><h2>Prove wallet ownership.</h2><p>Email verification is disabled for this test phase. A message signature starts a test session with this wallet. It does not move assets or approve transactions.</p><button class="primary-btn" data-launch-bind-confirm>Review message in wallet ↗</button><button class="text-link" data-close>Cancel</button>'
+          ? '<span class="section-label">WALLET ACCOUNT</span><h2>Confirm wallet ownership.</h2><p>A message signature connects this wallet to your account. It does not move assets or approve transactions.</p><button class="primary-btn" data-launch-bind-confirm>Review message in wallet ↗</button><button class="text-link" data-close>Cancel</button>'
           : '<span class="section-label">LINK YOUR VERIFIED ACCOUNT</span><h2>Link this wallet.</h2><p>A separate message signature links the connected wallet to your verified Google account. It does not move assets or authorize a contract transaction. Assets held by a previous wallet remain with that wallet.</p><button class="primary-btn" data-launch-bind-confirm>Review message in wallet ↗</button><button class="text-link" data-close>Cancel</button>',
       );
     } else if (target.hasAttribute('data-launch-bind-confirm')) {
       host.app.closeDialog();
       void run(() => client.bindWallet());
-    } else if (target.hasAttribute('data-launch-refresh')) void run(() => client.refresh());
-    else if (target.hasAttribute('data-launch-clear')) client.clearQuote();
-    else if (target.hasAttribute('data-launch-confirm')) void run(() => client.confirm());
-    else if (target.hasAttribute('data-launch-executor-confirm'))
-      void run(() => client.confirmExecutorPermission());
+    } else if (target.hasAttribute('data-launch-refresh'))
+      void run(async () => {
+        await client.refresh();
+        await valuations.current?.refresh(true);
+      });
+    else if (target.hasAttribute('data-launch-clear')) {
+      if (vaultActions.state.flow?.review) void run(() => vaultActions.cancel());
+      else client.clearQuote();
+    } else if (target.hasAttribute('data-launch-confirm'))
+      void run(() =>
+        vaultActions.state.flow?.review &&
+        client.state.quote &&
+        ['CREATE_VAULT', 'DEPOSIT', 'CLOSE'].includes(client.state.quote.operation)
+          ? vaultActions.confirm(vaultActions.state.flow.kind === 'DEPOSIT')
+          : client.confirm(),
+      );
     else if (
-      target.hasAttribute('data-launch-stock-refresh') ||
-      target.hasAttribute('data-launch-stock-buy') ||
-      target.hasAttribute('data-launch-stock-sell')
+      target.hasAttribute('data-launch-executor-confirm') &&
+      client.state.executorReview?.kind === 'REVOKE'
+    )
+      void run(() =>
+        vaultActions.state.flow?.review ? vaultActions.confirm() : client.confirmExecutorPermission(),
+      );
+    else if (
+      target.hasAttribute('data-launch-vault-stop') ||
+      target.hasAttribute('data-launch-vault-withdraw') ||
+      target.hasAttribute('data-launch-vault-recover')
     ) {
       const strategy =
-        target.dataset.launchStockRefresh ?? target.dataset.launchStockBuy ?? target.dataset.launchStockSell;
-      if (strategy !== 'TSLA' && strategy !== 'AMZN') return;
-      void run(async () => {
-        if (target.hasAttribute('data-launch-stock-refresh')) await client.refreshStock(strategy);
-        else {
-          await client.refreshStock(strategy);
-          const snapshot = client.state.stockSnapshots![strategy]!;
-          await client.reviewStock(
-            strategy,
-            target.hasAttribute('data-launch-stock-buy'),
-            target.hasAttribute('data-launch-stock-buy') ? snapshot.trackedCashRaw : snapshot.trackedStockRaw,
-            100,
-          );
-        }
-      });
-    } else if (
-      target.hasAttribute('data-launch-executor-refresh') ||
-      target.hasAttribute('data-launch-executor-revoke')
-    ) {
-      const strategy = target.dataset.launchExecutorRefresh ?? target.dataset.launchExecutorRevoke;
+        target.dataset.launchVaultStop ??
+        target.dataset.launchVaultWithdraw ??
+        target.dataset.launchVaultRecover;
       if (strategy !== 'TSLA' && strategy !== 'AMZN') return;
       void run(() =>
-        target.hasAttribute('data-launch-executor-revoke')
-          ? client.reviewExecutorPermission(strategy, null)
-          : client.refreshExecutor(strategy),
+        target.hasAttribute('data-launch-vault-stop')
+          ? vaultActions.stop(strategy)
+          : target.hasAttribute('data-launch-vault-withdraw')
+            ? vaultActions.withdraw(strategy)
+            : vaultActions.recover(strategy),
       );
     } else if (target.hasAttribute('data-launch-claim'))
       void run(() =>
@@ -450,6 +532,8 @@ export async function installLaunchMarket(
     }
   });
   document.addEventListener('input', (event) => {
+    vaultActions.cancelWalletSequence();
+    if (depositIntent) depositIntent.cancelled = true;
     ++shortcutRevision;
     const input = event.target as HTMLInputElement;
     const vaultForm = input.closest<HTMLFormElement>('[data-launch-vault-order]');
@@ -457,11 +541,21 @@ export async function installLaunchMarket(
     if (
       input.name === 'amount' &&
       address &&
-      client.state.wallet?.vaults.some(
-        (vault) => vault.status === 'OPEN' && vault.address.toLowerCase() === address,
-      )
-    )
-      vaultAmounts.set(address, input.value);
+      (address === 'new:tsla' ||
+        address === 'new:amzn' ||
+        client.state.wallet?.vaults.some(
+          (vault) => vault.status === 'OPEN' && vault.address.toLowerCase() === address,
+        ))
+    ) {
+      vaultAmounts.set(
+        address.startsWith('new:') ? `new:${vaultForm?.dataset.strategy}` : address,
+        input.value,
+      );
+      if (client.state.quote || client.state.stockReview) {
+        if (vaultActions.state.flow?.review) void run(() => vaultActions.cancel());
+        else client.clearQuote();
+      }
+    }
     const form = input.closest<HTMLFormElement>('[data-launch-order]');
     const strategy = form?.dataset.strategy;
     if (input.name === 'amount' && (strategy === 'TSLA' || strategy === 'AMZN')) {
@@ -487,49 +581,97 @@ export async function installLaunchMarket(
   });
   document.addEventListener('submit', (event) => {
     const form = event.target as HTMLFormElement;
-    if (form.hasAttribute('data-launch-executor-recover')) {
-      event.preventDefault();
-      const hash = String(new FormData(form).get('hash'));
-      void run(() => client.recoverExecutorTransaction(hash));
-      return;
-    }
-    if (form.hasAttribute('data-launch-executor-order')) {
+    if (form.hasAttribute('data-launch-vault-hash-recover')) {
       event.preventDefault();
       const strategy = form.dataset.strategy;
       if (strategy !== 'TSLA' && strategy !== 'AMZN') return;
-      const fields = new FormData(form);
-      void run(async () => {
-        const expiresAt = Math.floor(Date.parse(String(fields.get('expiresAt'))) / 1000);
-        if (!Number.isSafeInteger(expiresAt)) throw new Error('INVALID_EXECUTOR_PERMISSION');
-        await client.reviewExecutorPermission(strategy, {
-          executor: String(fields.get('executor')),
-          expiresAt: String(expiresAt),
-          maxOrderUsdc: inputRaw('DEPOSIT', 'AF_USDC', String(fields.get('maxOrderUsdc'))),
-          maxTotalBuyUsdc: inputRaw('DEPOSIT', 'AF_USDC', String(fields.get('maxTotalBuyUsdc'))),
-          maxSlippageBps: Number(fields.get('maxSlippageBps')),
-        });
-      });
+      const hash = String(new FormData(form).get('hash') ?? '');
+      void run(() => vaultActions.recover(strategy, hash));
+      return;
+    }
+    if (form.hasAttribute('data-launch-executor-recover')) {
+      event.preventDefault();
+      const hash = String(new FormData(form).get('hash'));
+      void run(() =>
+        vaultActions.state.flow
+          ? vaultActions.recover(vaultActions.state.flow.strategyId, hash)
+          : client.recoverExecutorTransaction(hash),
+      );
       return;
     }
     if (form.hasAttribute('data-launch-vault-order')) {
       event.preventDefault();
       const strategyId = form.dataset.strategy;
-      const operation = (event as SubmitEvent).submitter?.getAttribute('value');
-      if (
-        (strategyId !== 'TSLA' && strategyId !== 'AMZN') ||
-        (operation !== 'DEPOSIT' && operation !== 'WITHDRAW')
-      )
-        return;
+      if (strategyId !== 'TSLA' && strategyId !== 'AMZN') return;
+      if ((event as SubmitEvent).submitter?.getAttribute('value') !== 'DEPOSIT') return;
       const amount = String(new FormData(form).get('amount') ?? '');
-      void run(() =>
-        client.review({
-          strategyId,
-          operation,
-          asset: 'AF_USDC',
-          amountRaw: inputRaw(operation, 'AF_USDC', amount),
-          slippageBps: 100,
-        }),
-      );
+      if (depositIntent) return;
+      const intent = {
+        owner: client.state.owner?.toLowerCase() ?? null,
+        strategyId: strategyId as StrategyId,
+        amount,
+        cancelled: false,
+      };
+      depositIntent = intent;
+      void run(async () => {
+        try {
+          const amountRaw = inputRaw('DEPOSIT', 'AF_USDC', amount);
+          const access = () =>
+            actionAccess(
+              client.state,
+              strategyId,
+              client.state.wallet?.vaults.some((v) => v.strategyId === strategyId && v.status === 'OPEN')
+                ? 'DEPOSIT'
+                : 'CREATE_VAULT',
+              'AF_USDC',
+            );
+          if (access().action === 'CONNECT') await client.connect();
+          if (intent.cancelled) return;
+          if (access().action === 'LOGIN') {
+            location.assign(`/login/?next=${encodeURIComponent(location.pathname + location.hash)}`);
+            return;
+          }
+          if (access().action === 'BIND') await client.bindWallet();
+          if (intent.cancelled || access().action !== 'REVIEW') return;
+          const identity = vaultIdentity(client.state);
+          await valuations.current?.refresh(true);
+          if (intent.cancelled || identity !== vaultIdentity(client.state) || access().action !== 'REVIEW')
+            return;
+          const vault = client.state.wallet?.vaults.find(
+            (v) => v.strategyId === strategyId && v.status === 'OPEN',
+          );
+          const value = vault
+            ? (valuations.current?.state.byVault?.[vault.address.toLowerCase()] ??
+              valuations.current?.state[strategyId])
+            : valuations.current?.state[strategyId];
+          const paper = value?.value?.paper;
+          const flow = vaultActions.state.flow;
+          if (
+            flow?.busy ||
+            flow?.review ||
+            flow?.pendingHash ||
+            (flow?.strategyId === strategyId && flow.phase === 'PAPER_PENDING') ||
+            value?.error ||
+            paper?.status === 'REORG_REVIEW_REQUIRED' ||
+            !(
+              paper?.marketSession === 'CLOSED' ||
+              (paper?.quoteStatus === 'FRESH' &&
+                paper.marketSession === 'OPEN' &&
+                paper.sourceId === 'ALPACA_IEX')
+            )
+          )
+            return;
+          await vaultActions.deposit(strategyId, amountRaw, true);
+          document
+            .querySelector(
+              '[data-launch-vault-review], [aria-label="Reviewed chain quote"], [aria-label="Reviewed stock trade"]',
+            )
+            ?.scrollIntoView({ block: 'center' });
+        } finally {
+          depositIntent = null;
+          render();
+        }
+      });
       return;
     }
     if (!form.hasAttribute('data-launch-order')) return;
@@ -568,8 +710,11 @@ export async function installLaunchMarket(
     });
   });
   window.addEventListener('hashchange', () => {
+    vaultActions.cancelWalletSequence();
+    if (depositIntent) depositIntent.cancelled = true;
     ++shortcutRevision;
-    client.clearQuote();
+    if (vaultActions.state.flow?.review) void run(() => vaultActions.cancel());
+    else client.clearQuote();
     activeTrade();
   });
 
@@ -587,13 +732,26 @@ export async function installLaunchMarket(
       });
     };
   }
+  // Only pending ordinary market transactions need a five-second confirmation check.
+  // Vault action confirmations are driven by their controller; asset/valuation display uses 30 seconds.
   const polling =
     client.state.config?.deployment === 'CONFIGURED'
       ? window.setInterval(() => {
-          void run(() => client.refresh());
-          activity.requestRefresh();
+          const state = client.state;
+          const flow = vaultActions.state.flow;
+          const vaultAction =
+            flow && !['HOLDING', 'CLOSED', 'STOPPED', 'PAUSED', 'FAILED'].includes(flow.phase);
+          if (
+            !vaultAction &&
+            state.transaction.hash &&
+            ['SUBMITTED', 'INCLUDED', 'CONFIRMED_L2', 'REORGED', 'RECOVERY_REQUIRED'].includes(
+              state.transaction.state,
+            )
+          )
+            void run(() => client.refreshTransaction());
         }, 5000)
       : null;
+  valuations.current = new VaultValuationController(client, { api: createCommunityApi(), render });
   window.addEventListener(
     'pagehide',
     () => {
@@ -601,6 +759,7 @@ export async function installLaunchMarket(
       eventStream?.close();
       activity.dispose();
       paymentEstimates.dispose();
+      valuations.current?.dispose();
     },
     { once: true },
   );

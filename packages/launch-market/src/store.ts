@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { id, verifyMessage } from 'ethers';
+import { getAddress, id, verifyMessage } from 'ethers';
 import { address, hash, LAUNCH_CHAIN_ID } from './config.ts';
 import {
   LaunchMarketError,
@@ -49,7 +49,8 @@ const accountColumns = `id TEXT PRIMARY KEY,account_key TEXT NOT NULL UNIQUE,ema
 const walletTestDdl = `
 CREATE TABLE market_wallet_test_identities(wallet TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES market_accounts(id),created_at INTEGER NOT NULL) STRICT;
 CREATE TABLE market_wallet_test_challenges(nonce TEXT PRIMARY KEY,wallet TEXT NOT NULL,message TEXT NOT NULL,issued_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,consumed INTEGER NOT NULL CHECK(consumed IN(0,1))) STRICT;
-CREATE TABLE market_wallet_test_sessions(token_hash TEXT PRIMARY KEY,account_id TEXT NOT NULL UNIQUE REFERENCES market_accounts(id),wallet TEXT NOT NULL,csrf_token TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,identity_kind TEXT NOT NULL CHECK(identity_kind='WALLET_TEST')) STRICT;`;
+CREATE TABLE "market_wallet_test_sessions"(token_hash TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES market_accounts(id),wallet TEXT NOT NULL,csrf_token TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,identity_kind TEXT NOT NULL CHECK(identity_kind='WALLET_TEST')) STRICT;
+CREATE INDEX wallet_sessions_by_account ON market_wallet_test_sessions(account_id,created_at,token_hash);`;
 const ddl = `
 CREATE TABLE market_identity(id INTEGER PRIMARY KEY CHECK(id=1),chain_id INTEGER NOT NULL,origin TEXT NOT NULL) STRICT;
 CREATE TABLE "market_accounts"(${accountColumns}) STRICT;
@@ -64,7 +65,7 @@ CREATE UNIQUE INDEX one_canonical_market_height ON market_snapshots(chain_id,blo
 CREATE TABLE market_projection_version(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL) STRICT;
 INSERT INTO market_projection_version VALUES(1,0);
 ${walletTestDdl}
-PRAGMA user_version=2;`;
+PRAGMA user_version=3;`;
 
 /** This DB stores identity and chain projections. Token balances are always obtained from RPC. */
 export class LaunchMarketStore {
@@ -98,11 +99,13 @@ export class LaunchMarketStore {
           this.db.exec(ddl);
           this.db.prepare('INSERT INTO market_identity VALUES(1,?,?)').run(chainId, origin);
         });
-      } else if (version !== 1 && version !== 2) throw new LaunchMarketError('UNSUPPORTED_DATABASE_SCHEMA');
+      } else if (version !== 1 && version !== 2 && version !== 3)
+        throw new LaunchMarketError('UNSUPPORTED_DATABASE_SCHEMA');
       const identity = this.db.prepare('SELECT chain_id,origin FROM market_identity WHERE id=1').get();
       if (identity?.chain_id !== chainId || identity.origin !== origin)
         throw new LaunchMarketError('DATABASE_IDENTITY_MISMATCH');
       if (version === 1) this.migrateWalletTestAccounts();
+      if (version === 2) this.migrateMultipleWalletSessions();
       if (this.db.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok')
         throw new LaunchMarketError('DATABASE_CORRUPT');
       if (this.db.prepare('PRAGMA foreign_key_check').get())
@@ -133,11 +136,26 @@ ALTER TABLE market_accounts_v2 RENAME TO market_accounts;`);
         this.db.exec(walletTestDdl);
         if (this.db.prepare('PRAGMA foreign_key_check').get())
           throw new LaunchMarketError('DATABASE_FOREIGN_KEY_CORRUPT');
-        this.db.exec('PRAGMA user_version=2;');
+        this.db.exec('PRAGMA user_version=3;');
       });
     } finally {
       this.db.exec('PRAGMA foreign_keys=ON;');
     }
+  }
+  private migrateMultipleWalletSessions(): void {
+    this.atomic(() => {
+      // Only the bearer-session table changes. Existing identities, claim keys,
+      // vouchers, quotes, operations and financial projections are preserved.
+      this.db
+        .exec(`CREATE TABLE market_wallet_sessions_v3(token_hash TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES market_accounts(id),wallet TEXT NOT NULL,csrf_token TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,identity_kind TEXT NOT NULL CHECK(identity_kind='WALLET_TEST')) STRICT;
+INSERT INTO market_wallet_sessions_v3 SELECT token_hash,account_id,wallet,csrf_token,created_at,expires_at,identity_kind FROM market_wallet_test_sessions;
+DROP TABLE market_wallet_test_sessions;
+ALTER TABLE market_wallet_sessions_v3 RENAME TO market_wallet_test_sessions;
+CREATE INDEX wallet_sessions_by_account ON market_wallet_test_sessions(account_id,created_at,token_hash);`);
+      if (this.db.prepare('PRAGMA foreign_key_check').get())
+        throw new LaunchMarketError('DATABASE_FOREIGN_KEY_CORRUPT');
+      this.db.exec('PRAGMA user_version=3;');
+    });
   }
   atomic<T>(work: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -205,7 +223,7 @@ ALTER TABLE market_accounts_v2 RENAME TO market_accounts;`);
       nonce = randomBytes(24).toString('hex'),
       expiresAt = now + 300;
     if (account.identityKind !== 'GOOGLE') throw new LaunchMarketError('VERIFIED_EMAIL_REQUIRED', 401);
-    const message = `${new URL(this.origin).host} wants you to link your Ethereum account:\n${wallet}\n\nLink this wallet to AlphaForge account ${account.id}. This signature authorizes account linkage only. It does not move assets or authorize transactions.\n\nURI: ${this.origin}\nVersion: 1\nChain ID: ${this.chainId}\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`;
+    const message = `${new URL(this.origin).host} wants you to link your Ethereum account:\n${getAddress(wallet)}\n\nLink this wallet to AlphaForge account ${account.id}. This signature authorizes account linkage only. It does not move assets or authorize transactions.\n\nURI: ${this.origin}\nVersion: 1\nChain ID: ${this.chainId}\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`;
     this.atomic(() => {
       this.db
         .prepare('DELETE FROM market_wallet_challenges WHERE account_id=? OR expires_at<=?')
@@ -285,11 +303,16 @@ ALTER TABLE market_accounts_v2 RENAME TO market_accounts;`);
     const wallet = address(walletInput),
       nonce = randomBytes(24).toString('hex'),
       expiresAt = now + 300;
-    const message = `${new URL(this.origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nSign in to AlphaForge wallet-only TESTNET mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${this.origin}\nVersion: 1\nChain ID: ${this.chainId}\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`;
+    const message = `${new URL(this.origin).host} wants you to sign in with your Ethereum account:\n${getAddress(wallet)}\n\nSign in to AlphaForge wallet-only mode. This proves control of this wallet; it does not verify an email, move assets or approve a transaction. Free credits are limited to one claim for this wallet and 100 claims in total.\n\nURI: ${this.origin}\nVersion: 1\nChain ID: ${this.chainId}\nNonce: ${nonce}\nIssued At: ${new Date(now * 1000).toISOString()}\nExpiration Time: ${new Date(expiresAt * 1000).toISOString()}`;
     this.atomic(() => {
-      this.db
-        .prepare('DELETE FROM market_wallet_test_challenges WHERE wallet=? OR expires_at<=?')
-        .run(wallet, now);
+      this.db.prepare('DELETE FROM market_wallet_test_challenges WHERE consumed=1 OR expires_at<=?').run(now);
+      if (
+        Number(
+          this.db.prepare('SELECT count(*) n FROM market_wallet_test_challenges WHERE wallet=?').get(wallet)!
+            .n,
+        ) >= 5
+      )
+        throw new LaunchMarketError('CHALLENGE_LIMIT', 429);
       if (Number(this.db.prepare('SELECT count(*) n FROM market_wallet_test_challenges').get()!.n) >= 1000)
         throw new LaunchMarketError('CHALLENGE_LIMIT', 429);
       this.db
@@ -341,9 +364,16 @@ ALTER TABLE market_accounts_v2 RENAME TO market_accounts;`);
       const token = randomBytes(32).toString('base64url'),
         csrfToken = randomBytes(32).toString('base64url'),
         expiresAt = now + 3600;
+      this.db.prepare('DELETE FROM market_wallet_test_sessions WHERE expires_at<=?').run(now);
+      // Keep at most five devices. A new proof evicts only the oldest device,
+      // and every remaining device retains its independent CSRF token.
       this.db
-        .prepare('DELETE FROM market_wallet_test_sessions WHERE account_id=? OR expires_at<=?')
-        .run(String(accountId), now);
+        .prepare(
+          `DELETE FROM market_wallet_test_sessions WHERE token_hash IN(
+SELECT token_hash FROM market_wallet_test_sessions WHERE account_id=?
+ORDER BY created_at DESC,token_hash DESC LIMIT -1 OFFSET 4)`,
+        )
+        .run(String(accountId));
       if (Number(this.db.prepare('SELECT count(*) n FROM market_wallet_test_sessions').get()!.n) >= 10_000)
         throw new LaunchMarketError('WALLET_SESSION_LIMIT', 429);
       this.db
@@ -384,6 +414,18 @@ ALTER TABLE market_accounts_v2 RENAME TO market_accounts;`);
     const account = this.account(String(row.account_id));
     if (account.wallet !== row.wallet) return null;
     return { account, csrfToken: expectedCsrf, expiresAt: Number(row.expires_at) };
+  }
+  revokeWalletTestSession(token: string, csrfToken: string, now: number, allDevices = false): void {
+    this.atomic(() => {
+      const session = this.walletTestSession(token, csrfToken, now, true);
+      if (!session) throw new LaunchMarketError('MARKET_SESSION_REQUIRED', 401);
+      if (allDevices)
+        this.db.prepare('DELETE FROM market_wallet_test_sessions WHERE account_id=?').run(session.account.id);
+      else
+        this.db
+          .prepare('DELETE FROM market_wallet_test_sessions WHERE token_hash=?')
+          .run(createHash('sha256').update(token).digest('hex'));
+    });
   }
   requireWallet(accountId: string, owner: string): MarketAccount {
     const account = this.account(accountId);

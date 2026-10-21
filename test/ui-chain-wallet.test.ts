@@ -80,6 +80,44 @@ const factory = new PreparedActionFactory<{ readonly amount: string }>({
   encode: (action) => ({ data: asHexData(`0x1234${action.amount}`), value: 0n }),
 });
 
+test('an asynchronous operation guard must finish before send and a remote Stop prevents submission', async () => {
+  const provider = new ProviderFixture();
+  const wallet = new Eip1193Wallet(provider, {
+    chainId: CHAIN_ID,
+    target: CONTRACT,
+    actionAuthority: factory.authority,
+  });
+  const started = Promise.withResolvers<void>();
+  const guard = Promise.withResolvers<void>();
+  const pending = wallet.submit(factory.prepare({ amount: '01' }, OWNER), async () => {
+    started.resolve();
+    await guard.promise;
+    throw new Error('VAULT_RUN_STEP_CHANGED');
+  });
+  await started.promise;
+  assert.equal(provider.methods.includes('eth_sendTransaction'), false);
+  guard.resolve();
+  await assert.rejects(pending, /VAULT_RUN_STEP_CHANGED/);
+  assert.equal(provider.methods.includes('eth_sendTransaction'), false);
+});
+
+test('wallet identity is rebound after the asynchronous guard and cannot send on a changed account', async () => {
+  const provider = new ProviderFixture();
+  const wallet = new Eip1193Wallet(provider, {
+    chainId: CHAIN_ID,
+    target: CONTRACT,
+    actionAuthority: factory.authority,
+  });
+  await assert.rejects(
+    wallet.submit(factory.prepare({ amount: '01' }, OWNER), async () => {
+      await Promise.resolve();
+      provider.accounts = [OTHER_OWNER];
+    }),
+    /WALLET_ACCOUNT_CHANGED/,
+  );
+  assert.equal(provider.methods.includes('eth_sendTransaction'), false);
+});
+
 test('wallet returns an explicit ambiguous result when account changes during provider confirmation', async () => {
   const provider = new ProviderFixture();
   const response = Promise.withResolvers<unknown>();

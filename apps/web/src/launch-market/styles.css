@@ -212,3 +212,77 @@
     font-size: 14px;
   }
 }
+
+.launch-market .wallet-holding {
+  margin: 18px 0;
+}
+.launch-market .wallet-holding .wallet-pass-row {
+  margin: 0;
+}
+.launch-market .wallet-funding input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin: 8px 0 18px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--line, #c7c0b3);
+  background: var(--paper, #f5f0e5);
+}
+.launch-market .wallet-funding .inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.launch-market .launch-vault-options > summary {
+  cursor: pointer;
+  margin: 20px 0;
+}
+
+.launch-market .launch-automation {
+  margin: 28px 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--line, #c7c0b3);
+}
+.launch-market .launch-automation label,
+.launch-market .launch-automation input,
+.launch-market .launch-automation select {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+.launch-market .launch-automation input,
+.launch-market .launch-automation select {
+  min-width: 0;
+  min-height: 44px;
+  margin: 8px 0 18px;
+  padding: 10px 12px;
+  color: inherit;
+  border: 1px solid var(--line, #c7c0b3);
+  background: var(--paper, #f5f0e5);
+}
+.launch-market .launch-automation-session {
+  margin: 18px 0;
+}
+.launch-market .launch-automation summary {
+  cursor: pointer;
+  margin: 20px 0;
+}
+.launch-reviewed .order-quote dd {
+  overflow-wrap: anywhere;
+}
+
+.launch-market .wallet-pass-strategy > .text-link {
+  display: block;
+  width: fit-content;
+  margin-top: 12px;
+}
+
+.skip {
+  opacity: 0;
+  pointer-events: none;
+}
+.skip:focus {
+  opacity: 1;
+  pointer-events: auto;
+}

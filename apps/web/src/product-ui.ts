@@ -5,6 +5,8 @@ import { installPassPriceChart } from './pass-price-chart.ts';
 import { installCandleInspection, type CandleChartHost } from './kline-hover.ts';
 import './kline-hover.css';
 import './wallet-account.css';
+import { installCommunity } from './community/install.ts';
+import './community/styles.css';
 import './launch-market/styles.css';
 import { installLaunchMarket } from './launch-market/install.ts';
 import { installNativeMint } from './launch-market/native-mint.ts';
@@ -150,8 +152,8 @@ hydrate(document);
 const footerNote = document.querySelector('.footer-bottom > span');
 if (footerNote)
   footerNote.textContent = AF.originalMarketLayout
-    ? 'Testnet market · Asset contracts not deployed'
-    : 'Simulated trading · Testnet preview';
+    ? 'Strategy market · Wallet settlement'
+    : 'Strategy access · Local records';
 new MutationObserver((records) => {
   for (const record of records)
     for (const node of record.addedNodes) if (node instanceof Element) hydrate(node);
@@ -196,13 +198,13 @@ function catalogueRows(): string {
     ? rows
         .map(
           (item) =>
-            `<article class="sketch-box"><span class="section-label">${esc(item.scope)} / API CATALOGUE</span><h3>${esc(item.name)}</h3><p>${esc(item.description)}</p>${strategyLink(item)}<p class="small muted">Test access: ${esc(item.testPasses)} Pass. Passes are not deposited funds.</p></article>`,
+            `<article class="sketch-box"><span class="section-label">${esc(item.scope)} / API CATALOGUE</span><h3>${esc(item.name)}</h3><p>${esc(item.description)}</p>${strategyLink(item)}<p class="small muted">Strategy access: ${esc(item.testPasses)} Pass. Passes are not deposited funds.</p></article>`,
         )
         .join('')
     : '<p>No API strategies match. Select a local identity or adjust filters.</p>';
 }
 function catalogue(): string {
-  return `<section class="wrap section" aria-label="API strategies"><span class="section-label">BACKEND / LOCAL SIMULATION</span><h2>Run the local funding journey.</h2><p>These server catalogue entries have independent vaults. The six workshop specimens below are MOCK / FIXTURE.</p><div class="ranking-filters"><label>Search API catalogue<input data-product-search type="search" value="${esc(query)}" placeholder="Strategy ID or name"></label><label>Status<select data-product-status-filter>${['all', 'not_started', 'stopped', 'running', 'stopping'].map((v) => `<option ${statusFilter === v ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label>Environment<select data-product-environment-filter><option value="all">All environments</option><option ${environment === 'TEST_ONLY' ? 'selected' : ''}>TEST_ONLY</option></select></label></div><div class="strategy-grid" data-product-catalogue>${catalogueRows()}</div></section>`;
+  return `<section class="wrap section" aria-label="API strategies"><span class="section-label">STRATEGY WORKSPACES</span><h2>Run the local funding journey.</h2><p>These server catalogue entries have independent vaults. Workshop records are managed separately.</p><div class="ranking-filters"><label>Search API catalogue<input data-product-search type="search" value="${esc(query)}" placeholder="Strategy ID or name"></label><label>Status<select data-product-status-filter>${['all', 'not_started', 'stopped', 'running', 'stopping'].map((v) => `<option ${statusFilter === v ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label>Environment<select data-product-environment-filter><option value="all">All environments</option><option ${environment === 'TEST_ONLY' ? 'selected' : ''}>TEST_ONLY</option></select></label></div><div class="strategy-grid" data-product-catalogue>${catalogueRows()}</div></section>`;
 }
 function balances(v: ProductVault): string {
   const labels = [
@@ -224,10 +226,10 @@ function account(): string {
   const s = adapter.snapshot;
   const session = productSessionPresentation(s, adapter.mode);
   if (!session.usable)
-    return `<section class="wrap section" aria-label="API account unavailable"><h2>Backend account unavailable</h2><p>${esc(session.hint)}</p><p>Browser workshop records below are separate local mock data.</p></section>`;
+    return `<section class="wrap section" aria-label="API account unavailable"><h2>Backend account unavailable</h2><p>${esc(session.hint)}</p><p>Browser workshop records are stored separately on this device.</p></section>`;
   const totalPass = s.vaults.reduce((sum, v) => sum + BigInt(v.passBalance.total), 0n).toString();
   const availableUsdt = s.vaults.reduce((sum, v) => sum + BigInt(String(v.balances.idle)), 0n).toString();
-  return `<section class="wrap section"><span class="section-label">API ACCOUNT / ${esc(s.user ?? 'NO SESSION')}</span><h2>Backend vaults & test access.</h2><div class="receipt"><div class="receipt-lines"><div><span>Simulated PASS</span><strong>${esc(totalPass)} PASS</strong></div><div><span>Available simulated USDT</span><strong>${esc(units(availableUsdt))} USDT</strong></div></div></div><p>${adapter.mode === 'legacy' ? 'Legacy API capability: unavailable financial fields are shown explicitly.' : 'Canonical account and strategy relationships from the local backend.'}</p>${
+  return `<section class="wrap section"><span class="section-label">API ACCOUNT / ${esc(s.user ?? 'NO SESSION')}</span><h2>Strategy Vaults and access.</h2><div class="receipt"><div class="receipt-lines"><div><span>Simulated PASS</span><strong>${esc(totalPass)} PASS</strong></div><div><span>Available simulated USDT</span><strong>${esc(units(availableUsdt))} USDT</strong></div></div></div><p>${adapter.mode === 'legacy' ? 'Legacy API capability: unavailable financial fields are shown explicitly.' : 'Canonical account and strategy relationships from the local backend.'}</p>${
     s.account
       ? `<p>Account owner: ${esc(s.account.ownerId)} · ${s.account.strategies.length} registered strategy relationships.</p><div class="receipt-lines">${s.account.strategies
           .map((a) => {
@@ -236,7 +238,7 @@ function account(): string {
           })
           .join('')}</div>`
       : ''
-  }${s.vaults.length ? s.vaults.map((v) => `<article class="sketch-box"><h3>${esc(v.strategyId)}</h3><p>Owner ${esc(v.ownerId)} · ${esc(v.status)} · revision ${v.revision}</p><p class="small">Vault ${esc(v.vaultId)}</p>${balances(v)}<a class="text-link" data-product-strategy="${esc(v.strategyId)}" href="#/trade/${encodeURIComponent(v.strategyId)}">Open ${esc(v.strategyId)} workspace ↗</a></article>`).join('') : '<p>EMPTY — No backend vaults for this identity. Claim test access from the API catalogue.</p>'}<p class="dialog-notice">MOCK / FIXTURE below: the original browser trial funds and Pass exchange are independent from these API balances.</p></section>`;
+  }${s.vaults.length ? s.vaults.map((v) => `<article class="sketch-box"><h3>${esc(v.strategyId)}</h3><p>Owner ${esc(v.ownerId)} · ${esc(v.status)} · revision ${v.revision}</p><p class="small">Vault ${esc(v.vaultId)}</p>${balances(v)}<a class="text-link" data-product-strategy="${esc(v.strategyId)}" href="#/trade/${encodeURIComponent(v.strategyId)}">Open ${esc(v.strategyId)} workspace ↗</a></article>`).join('') : '<p>EMPTY — No backend vaults for this identity. Claim strategy access from the catalogue.</p>'}<p class="dialog-notice">Browser records are independent from these account balances.</p></section>`;
 }
 function workspace(id: string): string {
   const session = productSessionPresentation(adapter.snapshot, adapter.mode);
@@ -249,7 +251,7 @@ function workspace(id: string): string {
   if (!item)
     return `<div class="wrap inner-page"><h1>API strategy workspace.</h1><p>${esc(id)}</p><p>Select a local identity and refresh to read this server catalogue entry.</p></div>`;
   const v = vault?.vaultId === s.selectedVaultId ? vault : undefined;
-  return `<div class="wrap terminal-page"><header class="terminal-heading"><div><span class="section-label">${esc(item.scope)} / LOCAL SIMULATION</span><h1>${esc(item.name)}</h1><p>${esc(item.strategyId)} · ${esc(item.description)}</p></div></header><p>Test access and ledger simulation only. No market prices, yield or strategy performance are supplied by this API.</p>${detail ? `<p>Execution: ${esc(detail.capabilities?.execution ?? 'Unavailable')} · association ${esc(detail.accountStrategy?.status ?? 'Unavailable')}</p>` : ''}${!vault ? `<button class="primary-btn" data-product-claim="${esc(id)}" ${s.user && ['READY', 'EMPTY'].includes(s.phase) && !s.pending ? '' : 'disabled'}>Claim ${esc(item.testPasses)} test Pass ↗</button>` : !v ? '<p>LOADING selected vault…</p>' : `<section class="sketch-box"><h2>Workspace · ${esc(v.ownerId)}</h2><p>${esc(v.vaultId)} · <strong>${esc(v.status)}</strong> · revision ${v.revision}</p>${v.status === 'stopping' ? '<p class="dialog-notice">Stopping — waiting for open orders or positions to settle. Stop is not complete.</p>' : ''}${balances(v)}<div class="inline-actions">${button('deposit', 'Add test funds')}${button('allocate', 'Allocate')}${button('deallocate', 'Deallocate')}${button('start', 'Start simulation')}${button('stop', 'Stop')}</div><h3>Simulation controls</h3><div class="inline-actions">${button('reserveBuy', 'Reserve buy')}${button('fillBuy', 'Fill buy')}${button('cancelOrder', 'Cancel order')}${button('markPosition', 'Mark position')}${button('settlePosition', 'Settle position')}</div><h3>Withdrawal queue</h3><div class="inline-actions">${button('requestWithdrawal', 'Request withdrawal')}${button('confirmWithdrawal', 'Confirm withdrawal')}${button('cancelWithdrawal', 'Cancel withdrawal')}</div>${v.pendingOperations.length ? `<div class="receipt-lines">${v.pendingOperations.map((op) => `<div><span>${esc(op.kind)} · ${esc(op.operationId)} · ${esc(op.status)}</span><span>${esc(units(op.amount))}</span></div>`).join('')}</div>` : '<p>No pending orders or withdrawals.</p>'}<h3>API audit receipts</h3>${s.audit.length ? `<div class="receipt-lines">${s.audit.map((e) => `<div><span>${e.revision} · ${esc(e.commandType)} · ${esc(e.actorId)}</span><span>${esc(e.commandId)}</span></div>`).join('')}</div>` : '<p>No command receipts yet.</p>'}</section>`}<p><a href="#/account/funds" class="text-link">View account funds ↗</a></p></div>`;
+  return `<div class="wrap terminal-page"><header class="terminal-heading"><div><span class="section-label">STRATEGY / LOCAL RECORDS</span><h1>${esc(item.name)}</h1><p>${esc(item.strategyId)} · ${esc(item.description)}</p></div></header><p>Strategy access and local records. No market prices, yield or strategy performance are supplied by this API.</p>${detail ? `<p>Execution: ${esc(detail.capabilities?.execution ?? 'Unavailable')} · association ${esc(detail.accountStrategy?.status ?? 'Unavailable')}</p>` : ''}${!vault ? `<button class="primary-btn" data-product-claim="${esc(id)}" ${s.user && ['READY', 'EMPTY'].includes(s.phase) && !s.pending ? '' : 'disabled'}>Claim ${esc(item.testPasses)} Pass ↗</button>` : !v ? '<p>LOADING selected vault…</p>' : `<section class="sketch-box"><h2>Workspace · ${esc(v.ownerId)}</h2><p>${esc(v.vaultId)} · <strong>${esc(v.status)}</strong> · revision ${v.revision}</p>${v.status === 'stopping' ? '<p class="dialog-notice">Stopping — waiting for open orders or positions to settle. Stop is not complete.</p>' : ''}${balances(v)}<div class="inline-actions">${button('deposit', 'Add funds')}${button('allocate', 'Allocate')}${button('deallocate', 'Deallocate')}${button('start', 'Start simulation')}${button('stop', 'Stop')}</div><h3>Simulation controls</h3><div class="inline-actions">${button('reserveBuy', 'Reserve buy')}${button('fillBuy', 'Fill buy')}${button('cancelOrder', 'Cancel order')}${button('markPosition', 'Mark position')}${button('settlePosition', 'Settle position')}</div><h3>Withdrawal queue</h3><div class="inline-actions">${button('requestWithdrawal', 'Request withdrawal')}${button('confirmWithdrawal', 'Confirm withdrawal')}${button('cancelWithdrawal', 'Cancel withdrawal')}</div>${v.pendingOperations.length ? `<div class="receipt-lines">${v.pendingOperations.map((op) => `<div><span>${esc(op.kind)} · ${esc(op.operationId)} · ${esc(op.status)}</span><span>${esc(units(op.amount))}</span></div>`).join('')}</div>` : '<p>No pending orders or withdrawals.</p>'}<h3>API audit receipts</h3>${s.audit.length ? `<div class="receipt-lines">${s.audit.map((e) => `<div><span>${e.revision} · ${esc(e.commandType)} · ${esc(e.actorId)}</span><span>${esc(e.commandId)}</span></div>`).join('')}</div>` : '<p>No command receipts yet.</p>'}</section>`}<p><a href="#/account/funds" class="text-link">View account funds ↗</a></p></div>`;
 }
 const original = { ...AF.pages };
 if (!AF.originalMarketLayout) AF.pages.market = () => catalogue() + original.market();
@@ -316,7 +318,7 @@ function openCommand(type: CommandType): void {
         ? 'proceeds'
         : null;
   if (numeric)
-    fields += `<label>${numeric} · test units<input name="${numeric}" inputmode="decimal" value="" autocomplete="off" autofocus></label>`;
+    fields += `<label>${numeric} · units<input name="${numeric}" inputmode="decimal" value="" autocomplete="off" autofocus></label>`;
   if (type === 'reserveBuy')
     fields += `<label>Order ID<input name="orderId" value="${crypto.randomUUID()}"></label>`;
   const kind = ['fillBuy', 'cancelOrder'].includes(type)
@@ -335,7 +337,7 @@ function openCommand(type: CommandType): void {
       .join('')}</select></label>`;
   }
   AF.app.openDialog(
-    `<span class="section-label">API / LOCAL SIMULATION</span><h2>Review ${esc(type)}.</h2><p>${esc(review.ownerId)} · ${esc(review.vaultId)} · revision ${review.expectedRevision}</p>${fields}<p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-product-review>Review next ↗</button><button class="text-link" data-close>Cancel</button></div>`,
+    `<span class="section-label">API / LOCAL RECORDS</span><h2>Review ${esc(type)}.</h2><p>${esc(review.ownerId)} · ${esc(review.vaultId)} · revision ${review.expectedRevision}</p>${fields}<p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-product-review>Review next ↗</button><button class="text-link" data-close>Cancel</button></div>`,
   );
 }
 function reviewDraft(): void {
@@ -394,7 +396,7 @@ function openOnchainAction(action: OnchainProductAction): void {
           ? '<label>Untracked token address<input name="chainToken" autocomplete="off" autofocus></label>'
           : '<label>AF-USDC amount<input name="chainAmount" inputmode="decimal" autocomplete="off" autofocus></label>';
   AF.app.openDialog(
-    `<span class="section-label">TESTNET / WALLET REVIEW</span><h2>Review ${esc(action)}.</h2>${amount}<p>Current wallet signature and contract authorization determine access. AlphaForge Account does not grant Vault ownership.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-chain-review>Read and simulate ↗</button><button class="text-link" data-close>Cancel</button></div>`,
+    `<span class="section-label">WALLET REVIEW</span><h2>Review ${esc(action)}.</h2>${amount}<p>Current wallet signature and contract authorization determine access. AlphaForge Account does not grant Vault ownership.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-chain-review>Read and simulate ↗</button><button class="text-link" data-close>Cancel</button></div>`,
   );
 }
 function showOnchainDialogError(message: string): void {
@@ -468,7 +470,7 @@ async function reviewOnchainAction(control: HTMLElement): Promise<void> {
         ? `Token ${request.token}`
         : 'No amount';
   AF.app.openDialog(
-    `<span class="section-label">TESTNET / LIVE SIMULATION PASSED</span><h2>Confirm ${esc(request.kind)}.</h2><div class="receipt"><div class="receipt-lines"><div><span>Wallet owner</span><span>${esc(review.owner)}</span></div><div><span>Operation</span><span>${esc(review.operationId)}</span></div><div><span>Amount</span><span>${esc(amount)}</span></div></div></div><p>The wallet will show the exact contract transaction. Submission is not success; AlphaForge waits for receipt and canonical readback.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-chain-confirm>Request wallet confirmation ↗</button><button class="text-link" data-close>Cancel</button></div>`,
+    `<span class="section-label">WALLET / CONTRACT REVIEW</span><h2>Confirm ${esc(request.kind)}.</h2><div class="receipt"><div class="receipt-lines"><div><span>Wallet owner</span><span>${esc(review.owner)}</span></div><div><span>Operation</span><span>${esc(review.operationId)}</span></div><div><span>Amount</span><span>${esc(amount)}</span></div></div></div><p>The wallet will show the exact contract transaction. Submission is not success; AlphaForge waits for receipt and canonical readback.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-chain-confirm>Request wallet confirmation ↗</button><button class="text-link" data-close>Cancel</button></div>`,
   );
 }
 function openPassTransfer(): void {
@@ -478,7 +480,7 @@ function openPassTransfer(): void {
     throw Error('PASS_TRANSFER_UNAVAILABLE');
   passTransferDraft = {};
   AF.app.openDialog(
-    '<span class="section-label">TESTNET / PASS TRANSFER</span><h2>Review Pass transfer.</h2><label>Recipient address<input name="passRecipient" autocomplete="off" autofocus></label><label>Pass amount<input name="passAmount" inputmode="decimal" autocomplete="off"></label><p>Pass uses 18 decimals. Paid Buy and Sell are outside Phase One.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-pass-review>Read and simulate ↗</button><button class="text-link" data-close>Cancel</button></div>',
+    '<span class="section-label">PASS TRANSFER</span><h2>Review Pass transfer.</h2><label>Recipient address<input name="passRecipient" autocomplete="off" autofocus></label><label>Pass amount<input name="passAmount" inputmode="decimal" autocomplete="off"></label><p>Pass uses 18 decimals. Paid Buy and Sell are outside Phase One.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-pass-review>Read and simulate ↗</button><button class="text-link" data-close>Cancel</button></div>',
   );
 }
 async function reviewPassTransfer(control: HTMLElement): Promise<void> {
@@ -505,7 +507,7 @@ async function reviewPassTransfer(control: HTMLElement): Promise<void> {
     throw Error('PASS_TRANSFER_REVIEW_MISMATCH');
   passTransferDraft = { request, review };
   AF.app.openDialog(
-    `<span class="section-label">TESTNET / LIVE SIMULATION PASSED</span><h2>Confirm Pass transfer.</h2><div class="receipt"><div class="receipt-lines"><div><span>Wallet owner</span><span>${esc(review.owner)}</span></div><div><span>Pass contract</span><span>${esc(review.token)}</span></div><div><span>Recipient</span><span>${esc(request.recipient)}</span></div><div><span>Amount</span><span>${esc(request.passBaseUnits)} Pass base units</span></div><div><span>Operation</span><span>${esc(review.operationId)}</span></div></div></div><p>The wallet will show the exact ERC-20 transfer. One Pass equals 10^18 base units.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-pass-confirm>Request wallet confirmation ↗</button><button class="text-link" data-close>Cancel</button></div>`,
+    `<span class="section-label">WALLET / CONTRACT REVIEW</span><h2>Confirm Pass transfer.</h2><div class="receipt"><div class="receipt-lines"><div><span>Wallet owner</span><span>${esc(review.owner)}</span></div><div><span>Pass contract</span><span>${esc(review.token)}</span></div><div><span>Recipient</span><span>${esc(request.recipient)}</span></div><div><span>Amount</span><span>${esc(request.passBaseUnits)} Pass base units</span></div><div><span>Operation</span><span>${esc(review.operationId)}</span></div></div></div><p>The wallet will show the exact ERC-20 transfer. One Pass equals 10^18 base units.</p><p data-product-dialog-error class="form-error" role="alert"></p><div class="inline-actions"><button class="primary-btn" data-pass-confirm>Request wallet confirmation ↗</button><button class="text-link" data-close>Cancel</button></div>`,
   );
 }
 document.addEventListener('click', (event) => {
@@ -547,7 +549,7 @@ document.addEventListener('click', (event) => {
     } else if (target.hasAttribute('data-chain-connect')) {
       if (target.closest('[data-wallet-account]')) {
         AF.app.openDialog(
-          `<span class="section-label">CONNECT YOUR WALLET</span><h2>Connect Wallet</h2><p>Choose your browser wallet to continue.</p><div class="wallet-options"><button class="primary-btn" data-wallet-choice="browser">Browser Wallet <span>Robinhood Chain Testnet</span></button></div><p class="small muted">On mobile, open this page in your wallet’s browser.</p>`,
+          `<span class="section-label">CONNECT YOUR WALLET</span><h2>Connect Wallet</h2><p>Choose your browser wallet to continue.</p><div class="wallet-options"><button class="primary-btn" data-wallet-choice="browser">Browser Wallet <span>Robinhood Chain</span></button></div><p class="small muted">On mobile, open this page in your wallet’s browser.</p>`,
         );
       } else {
         if (!onchainRuntime) throw Error('CHAIN_RUNTIME_UNAVAILABLE');
@@ -633,7 +635,7 @@ document.addEventListener('click', (event) => {
       draft = null;
       claimId = target.dataset.productClaim!;
       AF.app.openDialog(
-        `<span class="section-label">TEST ACCESS / API</span><h2>Claim test Pass access.</h2><p>${esc(claimId)} · ${esc(adapter.snapshot.user)}. Access allowance is not cash. Claiming does not deposit funds.</p><button class="primary-btn" data-product-confirm>Confirm test access</button><button class="text-link" data-close>Cancel</button>`,
+        `<span class="section-label">STRATEGY ACCESS</span><h2>Claim Pass access.</h2><p>${esc(claimId)} · ${esc(adapter.snapshot.user)}. Access allowance is not cash. Claiming does not deposit funds.</p><button class="primary-btn" data-product-confirm>Confirm access</button><button class="text-link" data-close>Cancel</button>`,
       );
     } else if (target.hasAttribute('data-product-confirm')) {
       target.setAttribute('disabled', '');
@@ -717,7 +719,12 @@ setInterval(() => {
     render();
   }
 }, 1000);
-void installLaunchMarket(AF, window.ethereum, undefined, original.account).catch((error) => {
-  localError = error instanceof Error ? error.message : 'MARKET_INITIALIZATION_FAILED';
-  render();
-});
+const community = installCommunity(AF);
+void installLaunchMarket(AF, window.ethereum, undefined, AF.pages.account)
+  .then((launch) => {
+    if (launch) community.attachLaunch(launch);
+  })
+  .catch((error) => {
+    localError = error instanceof Error ? error.message : 'MARKET_INITIALIZATION_FAILED';
+    render();
+  });

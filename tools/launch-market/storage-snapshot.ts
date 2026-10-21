@@ -19,16 +19,17 @@ import { readRegularBytes } from '../../packages/testnet/src/bounded-file.ts';
 
 const capacity = 512 * 1024 * 1024;
 /**
- * Explicit schema pins from LaunchMarketStore (v1/v2) and MarketEventIndexer (v1), including SQLite's
+ * Explicit schema pins from LaunchMarketStore (v1/v2/v3) and MarketEventIndexer (v1), including SQLite's
  * constraint autoindexes. Canonical UTF-8 bytes are JSON.stringify() of rows selected in column
  * order type,name,tbl_name,sql, sorted by type COLLATE BINARY,name COLLATE BINARY, with no newline.
  * Any DDL change requires an explicit schema qualification and a new reviewed pin.
  */
 export const expectedSchemaSha256 = {
-  'market.sqlite': '8dc4daab94a91809ee8be9ff08fc3487870b630e6b4e1d76bf07e2f33808f7fe',
+  'market.sqlite': '6662ec65beb541cfb6bc12f3a27fe6ec595025bf51eea660de4ccb587f6427f4',
   'market-events.sqlite': 'd62a1400b85053ca785dc7a3e6b134b660cf47f92cb603865d03886a51f162e0',
 } as const;
 const legacyMarketSchemaSha256 = 'ebcd5b0c6de108735f97ebbac53d7e7545cfa9c35d0d2a5dc38d7c7d953b64a6';
+const singleSessionSchemaSha256 = '8dc4daab94a91809ee8be9ff08fc3487870b630e6b4e1d76bf07e2f33808f7fe';
 const specifications = [
   {
     file: 'market.sqlite',
@@ -211,7 +212,7 @@ function inspect(db: DatabaseSync, spec: Specification): StorageDatabaseEvidence
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (
     db.prepare('PRAGMA application_id').get()?.application_id !== spec.applicationId ||
-    (version !== 1 && !(spec.file === 'market.sqlite' && version === 2))
+    (version !== 1 && !(spec.file === 'market.sqlite' && (version === 2 || version === 3)))
   )
     reject('SNAPSHOT_DATABASE_IDENTITY');
   if (
@@ -230,10 +231,13 @@ function inspect(db: DatabaseSync, spec: Specification): StorageDatabaseEvidence
   const pin =
     spec.file === 'market.sqlite' && version === 1
       ? legacyMarketSchemaSha256
-      : expectedSchemaSha256[spec.file];
+      : spec.file === 'market.sqlite' && version === 2
+        ? singleSessionSchemaSha256
+        : expectedSchemaSha256[spec.file];
   if (sha(JSON.stringify(completeSchema)) !== pin) reject('SNAPSHOT_UNKNOWN_SCHEMA');
   const schema = completeSchema.filter((row) => !String(row.name).startsWith('sqlite_'));
-  const tableDefinitions = spec.file === 'market.sqlite' && version === 2 ? walletTestTables : spec.tables;
+  const tableDefinitions =
+    spec.file === 'market.sqlite' && (version === 2 || version === 3) ? walletTestTables : spec.tables;
   const expectedTables = Object.keys(tableDefinitions).sort(),
     tables = schema
       .filter((row) => row.type === 'table')
@@ -243,9 +247,13 @@ function inspect(db: DatabaseSync, spec: Specification): StorageDatabaseEvidence
       .filter((row) => row.type === 'index')
       .map((row) => String(row.name))
       .sort();
+  const expectedIndexes =
+    spec.file === 'market.sqlite' && version === 3
+      ? [...spec.indexes, 'wallet_sessions_by_account'].sort()
+      : [...spec.indexes].sort();
   if (
     JSON.stringify(tables) !== JSON.stringify(expectedTables) ||
-    JSON.stringify(indexes) !== JSON.stringify([...spec.indexes].sort()) ||
+    JSON.stringify(indexes) !== JSON.stringify(expectedIndexes) ||
     schema.some((row) => row.type !== 'table' && row.type !== 'index')
   )
     reject('SNAPSHOT_UNKNOWN_SCHEMA');

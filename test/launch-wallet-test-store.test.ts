@@ -49,6 +49,35 @@ function completeClaim(store: LaunchMarketStore, accountId: string, wallet: stri
   return store.voucher(accountId)!;
 }
 
+test('wallet sign-in and account-link messages checksum the public administrator address while retaining normalized database identity', () => {
+  const f = fixture();
+  try {
+    // Public address only; this test never has or requests the administrator's private key.
+    const administrator = '0x86767116cd40bf6b4f8cf88e08d11e38b04364cf';
+    const checksumAdministrator = '0x86767116cd40bf6b4f8cf88E08D11E38B04364Cf';
+    assert.notEqual(checksumAdministrator, administrator);
+    const account = f.store.trustedAccount(identity(900), 1000);
+    for (const input of [administrator, checksumAdministrator]) {
+      const login = f.store.walletTestChallenge(input, 1000);
+      assert.equal(login.message.split('\n')[1], checksumAdministrator);
+      assert.equal(
+        f.store.db.prepare('SELECT wallet FROM market_wallet_test_challenges WHERE nonce=?').get(login.nonce)!
+          .wallet,
+        administrator,
+      );
+      const binding = f.store.bindingChallenge(account.id, input, 1000);
+      assert.equal(binding.message.split('\n')[1], checksumAdministrator);
+      assert.equal(
+        f.store.db.prepare('SELECT wallet FROM market_wallet_challenges WHERE nonce=?').get(binding.nonce)!
+          .wallet,
+        administrator,
+      );
+    }
+  } finally {
+    f.close();
+  }
+});
+
 test('wallet test login proves possession without fabricating email verification and hashes bearer tokens', async () => {
   const f = fixture();
   try {
@@ -130,7 +159,7 @@ test('wallet challenge rejects wrong signer, domain, chain, premature use, expir
   }
 });
 
-test('wallet sessions enforce CSRF and time boundaries, persist across restart and rotate on a new proof', async () => {
+test('wallet sessions enforce CSRF and time boundaries and retain independent devices across restart', async () => {
   const f = fixture();
   try {
     const wallet = new Wallet(h(103));
@@ -152,11 +181,90 @@ test('wallet sessions enforce CSRF and time boundaries, persist across restart a
       const newSession = await signIn(reopened, wallet, 1002);
       assert.equal(newSession.account.id, session.account.id);
       assert.equal(newSession.account.accountKey, session.account.accountKey);
-      assert.equal(reopened.walletTestSession(session.token, null, 1003, false), null);
+      assert.equal(
+        reopened.walletTestSession(session.token, session.csrfToken, 1003, true)?.account.id,
+        session.account.id,
+      );
+      assert.equal(reopened.walletTestSession(newSession.token, session.csrfToken, 1003, true), null);
       assert.notEqual(newSession.token, session.token);
-      assert.equal(reopened.db.prepare('SELECT count(*) n FROM market_wallet_test_sessions').get()!.n, 1);
+      assert.equal(reopened.db.prepare('SELECT count(*) n FROM market_wallet_test_sessions').get()!.n, 2);
     } finally {
       reopened.close();
+    }
+  } finally {
+    f.close();
+  }
+});
+
+test('independent devices retain individual CSRF and support local or all-device revocation', async () => {
+  const f = fixture();
+  try {
+    const wallet = new Wallet(h(120)),
+      stranger = new Wallet(h(121));
+    const sessions: Awaited<ReturnType<typeof signIn>>[] = [];
+    for (let n = 0; n < 6; n++) sessions.push(await signIn(f.store, wallet, 1000 + n));
+    assert.equal(f.store.walletTestSession(sessions[0]!.token, null, 1010, false), null);
+    for (const session of sessions.slice(1))
+      assert.equal(
+        f.store.walletTestSession(session.token, session.csrfToken, 1010, true)?.account.id,
+        session.account.id,
+      );
+    const unrelated = await signIn(f.store, stranger, 1006);
+    assert.throws(
+      () => f.store.revokeWalletTestSession(sessions[1]!.token, unrelated.csrfToken, 1010),
+      /MARKET_SESSION_REQUIRED/,
+    );
+    f.store.revokeWalletTestSession(sessions[1]!.token, sessions[1]!.csrfToken, 1010);
+    assert.equal(f.store.walletTestSession(sessions[1]!.token, null, 1010, false), null);
+    assert.ok(f.store.walletTestSession(sessions[2]!.token, null, 1010, false));
+    f.store.revokeWalletTestSession(sessions[2]!.token, sessions[2]!.csrfToken, 1010, true);
+    for (const session of sessions)
+      assert.equal(f.store.walletTestSession(session.token, null, 1010, false), null);
+    assert.ok(f.store.walletTestSession(unrelated.token, null, 1010, false));
+  } finally {
+    f.close();
+  }
+});
+
+test('schema two migration retains live bearer and all financial histories without creating a new identity', async () => {
+  const f = fixture();
+  try {
+    const wallet = new Wallet(h(122));
+    const original = await signIn(f.store, wallet);
+    const voucher = completeClaim(f.store, original.account.id, wallet.address);
+    f.store.db
+      .prepare('INSERT INTO market_quotes VALUES(?,?,?,?,?)')
+      .run('migration-quote', original.account.id, wallet.address.toLowerCase(), '{}', 1060);
+    f.store.db
+      .prepare('INSERT INTO market_operations VALUES(?,?,?,?,?)')
+      .run('migration-operation', 'migration-quote', wallet.address.toLowerCase(), h(201), '{}');
+    f.store.db.exec(`DROP INDEX wallet_sessions_by_account;
+ALTER TABLE market_wallet_test_sessions RENAME TO temporary_sessions;
+CREATE TABLE market_wallet_test_sessions(token_hash TEXT PRIMARY KEY,account_id TEXT NOT NULL UNIQUE REFERENCES market_accounts(id),wallet TEXT NOT NULL,csrf_token TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,identity_kind TEXT NOT NULL CHECK(identity_kind='WALLET_TEST')) STRICT;
+INSERT INTO market_wallet_test_sessions SELECT * FROM temporary_sessions;
+DROP TABLE temporary_sessions; PRAGMA user_version=2;`);
+    const before = f.store.fingerprint();
+    f.store.close();
+    const next = new LaunchMarketStore(f.path, origin);
+    try {
+      assert.equal(next.db.prepare('PRAGMA user_version').get()!.user_version, 3);
+      assert.equal(next.fingerprint(), before);
+      assert.equal(
+        next.walletTestSession(original.token, original.csrfToken, 1002, true)?.account.id,
+        original.account.id,
+      );
+      const second = await signIn(next, wallet, 1003);
+      assert.equal(second.account.accountKey, original.account.accountKey);
+      assert.ok(next.walletTestSession(original.token, original.csrfToken, 1003, true));
+      assert.equal(next.voucher(second.account.id)!.nonce, voucher.nonce);
+      assert.equal(next.db.prepare('SELECT count(*) n FROM market_operations').get()!.n, 1);
+      assert.equal(next.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+      assert.throws(
+        () => next.reserveClaim(second.account.id, wallet.address, 1003, 1063, 1),
+        /ALREADY_CLAIMED/,
+      );
+    } finally {
+      next.close();
     }
   } finally {
     f.close();
@@ -492,7 +600,7 @@ test('schema 1 migration preserves every account, claim, quote, operation, event
   legacy.close();
   const store = new LaunchMarketStore(path, origin);
   try {
-    assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 2);
+    assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 3);
     assert.equal(store.db.prepare('PRAGMA foreign_keys').get()!.foreign_keys, 1);
     assert.equal(store.db.prepare('PRAGMA foreign_key_check').get(), undefined);
     for (const table of tables) {

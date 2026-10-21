@@ -46,7 +46,7 @@ function failureMessage(caught: unknown, fallback: string): string {
   if (caught.message === 'DEPLOYMENT_SEQUENCE_RECOVERY_REQUIRED')
     return 'Continuous deployment stopped because a saved transaction needs recovery. Verify its actual wallet hash before continuing.';
   if (caught.message === 'DEPLOYMENT_READ_RPC_UNAVAILABLE')
-    return `Could not read Robinhood Chain Testnet. Keep the saved transaction and try checking confirmations again. Error detail: ${caught.message}`;
+    return `Could not read Robinhood Chain. Keep the saved transaction and try checking confirmations again. Error detail: ${caught.message}`;
   if (caught.message.startsWith('DEPLOYMENT_READ_RPC_'))
     return `The chain query could not be verified. Keep the saved transaction; verification has not advanced. Error detail: ${caught.message}`;
   if (caught.message.startsWith('INVALID_WALLET_RPC_RESPONSE:'))
@@ -71,14 +71,14 @@ function label(address: string): string {
       : key === 'amznPass'
         ? 'AMZN PASS'
         : key?.endsWith('Stock')
-          ? key.replace('Stock', ' test stock')
+          ? key.replace('Stock', ' stock units')
           : (key ?? address);
 }
 function movement(action: DeploymentAction): string {
   if (!action.inputAssets.length) return 'No asset transfer';
   return action.inputAssets
     .map((asset, index) => {
-      const name = asset === 'native ETH' ? 'test ETH' : label(asset);
+      const name = asset === 'native ETH' ? 'ETH' : label(asset);
       const decimals = name === 'AF-USDC' ? 6 : 18;
       return amount(action.inputAmounts[index]!, decimals) + ' ' + name;
     })
@@ -106,30 +106,30 @@ function render() {
       entry.state !== 'CONFIRMED' &&
       (!entry.transactionHash || !['SUBMITTED', 'INCLUDED'].includes(entry.state)),
   );
-  root.innerHTML = `<header class="deployment-header"><a class="deployment-brand" href="./#/home">AlphaForge</a><span class="deployment-label">ROBINHOOD CHAIN TESTNET · ADMINISTRATOR</span></header>
-    <main><p class="deployment-label">APPROVED DEPLOYMENT / 46630</p><h1>Launch the test market.</h1>
+  root.innerHTML = `<header class="deployment-header"><a class="deployment-brand" href="./#/home">AlphaForge</a><span class="deployment-label">ROBINHOOD CHAIN · ADMINISTRATOR</span></header>
+    <main><p class="deployment-label">APPROVED DEPLOYMENT / 46630</p><h1>Launch the market.</h1>
     <p class="deployment-lede">Connect your approved wallet → start the remaining steps → approve each transaction in your wallet. This page checks confirmations and continues automatically.</p>
     <section class="deployment-card"><h2>Ownership & funding</h2><dl>
       <div><dt>Deployer / administrator</dt><dd class="deployment-address">${DEPLOYMENT_ADMIN}</dd></div>
       <div><dt>TSLA & AMZN LP recipient</dt><dd class="deployment-address">${DEPLOYMENT_ADMIN}</dd></div>
       <div><dt>Subscription recipient</dt><dd class="deployment-address">${DEPLOYMENT_ADMIN}</dd></div>
       <div><dt>AF-USDC fixed supply</dt><dd>2,000,000 AF-USDC</dd></div>
-      <div><dt>Conversion reserve</dt><dd>100,000 AF-USDC + 0.002 test ETH</dd></div>
+      <div><dt>Conversion reserve</dt><dd>100,000 AF-USDC + 0.002 ETH</dd></div>
       <div><dt>Claim / TSLA LP / AMZN LP</dt><dd>100,000 / 250,000 / 250,000 AF-USDC</dd></div>
       <div><dt>ETH output limits</dt><dd>0.0002 per transaction · 0.001 per account/day · 0.0016 total/day</dd></div>
-      <div><dt>ETH reserve minimum</dt><dd>0.0002 test ETH</dd></div>
+      <div><dt>ETH reserve minimum</dt><dd>0.0002 ETH</dd></div>
       <div><dt>Fees</dt><dd>AMM 0.30% to pool · Conversion 0% · Mint 0%</dd></div>
       ${
         payload
           ? `<div><dt>Independent stock reserves</dt><dd>${esc(amount(String(payload.plan.inputs.stockReserveUsdcRaw), 6))} AF-USDC per strategy</dd></div>
       <div><dt>Quote / claim signers</dt><dd class="deployment-address">${esc(payload.plan.inputs.quoteSigner)}<br>${esc(payload.plan.inputs.claimSigner)}</dd></div>
-      <div><dt>Gas budget</dt><dd>Up to ${esc(amount(payload.budget.maxTotalGasCostWei, 18))} test ETH total; ${esc(payload.budget.maxGasPerTransactionRaw)} gas per step</dd></div>
+      <div><dt>Gas budget</dt><dd>Up to ${esc(amount(payload.budget.maxTotalGasCostWei, 18))} ETH total; ${esc(payload.budget.maxGasPerTransactionRaw)} gas per step</dd></div>
       <div><dt>Gas fee cap / tip</dt><dd>${esc(payload.budget.maxFeePerGasRaw)} / ${esc(payload.budget.maxPriorityFeePerGasRaw)} wei per gas</dd></div>
-      <div><dt>Wallet retained balance</dt><dd>At least ${esc(amount(payload.budget.minimumRemainingEthRaw, 18))} test ETH</dd></div>
+      <div><dt>Wallet retained balance</dt><dd>At least ${esc(amount(payload.budget.minimumRemainingEthRaw, 18))} ETH</dd></div>
       <div><dt>Plan signing window</dt><dd>${esc(new Date(payload.approvalExpiresAt * 1000).toISOString())}</dd></div>`
           : ''
       }
-    </dl><p class="deployment-note">Test assets have no promised cash value. The ordinary testing wallet keeps its user role.</p></section>
+    </dl><p class="deployment-note">Asset values are not guaranteed. Connected user wallets retain their user role.</p></section>
     <section class="deployment-card"><div class="deployment-step-top"><h2>${complete ? 'Wallet transactions confirmed' : `Step ${Math.min(next + 1, 41)} / 41`}</h2><span>${verified ? entries.filter((entry) => entry.state === 'CONFIRMED').length + ' confirmed' : 'Chain verification required'}</span></div>
       <p class="deployment-feedback${error ? ' deployment-error' : ''}" role="status" aria-live="polite">${esc(notice)}</p>
       ${
@@ -139,7 +139,7 @@ function render() {
       <div><dt>Asset movement</dt><dd>${esc(movement(current))}</dd></div>
       <div><dt>Recipient</dt><dd class="deployment-address">${esc(current.recipient)}</dd></div>
       <div><dt>Contract</dt><dd class="deployment-address">${esc(current.contractAddress)}</dd></div>
-      <div><dt>Nonce / native value</dt><dd>${next} / ${esc(amount(current.unsigned!.value, 18))} test ETH</dd></div></dl>
+      <div><dt>Nonce / native value</dt><dd>${next} / ${esc(amount(current.unsigned!.value, 18))} ETH</dd></div></dl>
       <details><summary>Expected result & exact calldata</summary><pre>${esc(JSON.stringify(current.expectedOutput, null, 2))}</pre><pre>${esc(current.unsigned!.data)}</pre></details>`
           : ''
       }
@@ -149,7 +149,7 @@ function render() {
       <div class="deployment-actions"><button class="deployment-primary" data-continue ${busy || !connected || !verified || blockedRecovery || complete ? 'disabled' : ''}>Start remaining steps</button>
       ${continuousRun ? `<button data-stop ${continuousRun.signal.aborted ? 'disabled' : ''}>${continuousRun.signal.aborted ? 'Stopping after current request…' : 'Stop continuing'}</button>` : ''}</div>
       <p class="deployment-note">Start once; approve each transaction in Phantom or your connected wallet. Keep this tab visible. Each successful step waits for chain confirmation before the next wallet request. Stop prevents further requests; an open wallet approval or an already submitted transaction must still be handled in your wallet. Reloading never resumes signing automatically.</p>
-      <p class="deployment-note">Chain verification reads directly from the official Robinhood Chain Testnet interface. Your wallet signs and broadcasts each approved step.</p>
+      <p class="deployment-note">Chain verification reads directly from the official Robinhood Chain interface. Your wallet signs and broadcasts each approved step.</p>
       <p class="deployment-note">A step advances after its transaction matches the plan, succeeds, and has 3 L2 blocks including its inclusion block. This does not mean L1 finality. Check confirmations after the wallet submits. Keep the displayed gas and fee values.</p>
       <p class="deployment-note">Open this workflow in one tab. The wallet handles each approval and broadcasts it itself. If an approval remains open past the signing window, reject it in your wallet. After a rejected or uncertain result, stop and check your wallet before continuing.</p>
       ${complete ? '<p>Server activation still requires actual contract, balance, pool, and permission verification. These wallet receipts alone do not mark the market live.</p>' : ''}
@@ -374,7 +374,7 @@ try {
     continuousRun?.abort(new Error('DEPLOYMENT_CONTINUOUS_WALLET_CHANGED'));
     connected = false;
     verified = false;
-    notice = 'Wallet or network changed. Reconnect the approved wallet on Robinhood Chain Testnet.';
+    notice = 'Wallet or network changed. Reconnect the approved wallet on Robinhood Chain.';
     render();
   };
   provider.on?.('accountsChanged', walletChanged);
@@ -390,7 +390,7 @@ try {
   window.addEventListener('pagehide', () => {
     continuousRun?.abort(new Error('DEPLOYMENT_CONTINUOUS_TAB_HIDDEN'));
   });
-  notice = 'Approved plan verified. Connect 0x8676…64cf on Robinhood Chain Testnet (46630).';
+  notice = 'Approved plan verified. Connect 0x8676…64cf on Robinhood Chain (46630).';
 } catch (caught) {
   error = true;
   notice = caught instanceof Error ? caught.message : 'The approved deployment plan could not be verified.';

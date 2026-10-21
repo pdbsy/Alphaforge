@@ -6,6 +6,8 @@ interface StockSourceOptions {
   readonly apiSecret: string;
   readonly fetcher?: typeof fetch;
   readonly now?: () => number;
+  /** Private archival hook. Never exposed to the browser or operational status. */
+  readonly capture?: (evidence: unknown) => void;
 }
 export interface ConfirmedStockReference {
   readonly strategyId: 'TSLA' | 'AMZN';
@@ -17,7 +19,7 @@ export interface ConfirmedStockReference {
   readonly calendarObservedAt: number;
   readonly sourceDigest: string;
   readonly calendarDigest: string;
-  readonly source: 'Alpaca IEX reference for test assets';
+  readonly source: 'Alpaca IEX';
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_STOCK_SOURCE');
@@ -148,15 +150,18 @@ export class VerifiedStockReference {
       regularClose: session?.closes ?? 0,
       calendarObservedAt: observed,
       calendarDigest,
-      source: 'Alpaca IEX reference for test assets' as const,
+      source: 'Alpaca IEX' as const,
     };
-    if (!clock.is_open || !session || calendarReadAt < session.opens || calendarReadAt >= session.closes)
+    if (!clock.is_open || !session || calendarReadAt < session.opens || calendarReadAt >= session.closes) {
+      this.#options.capture?.({ strategyId, clock: rawClock, calendar });
       return { ...result, status: 'CLOSED', priceRaw: null, sourceDigest: calendarDigest };
+    }
     if (seconds(clock.next_close) !== session.closes) throw new Error('CALENDAR_CLOCK_DISAGREE');
     const rawQuote = await this.#get(
         `https://data.alpaca.markets/v2/stocks/${strategyId}/quotes/latest?feed=iex`,
       ),
       quote = object(object(rawQuote).quote);
+    if (object(rawQuote).symbol !== strategyId) throw new Error('STOCK_SOURCE_SYMBOL');
     const at = seconds(quote.t),
       bid = amount(quote.bp),
       ask = amount(quote.ap);
@@ -167,6 +172,7 @@ export class VerifiedStockReference {
       throw new Error('REGULAR_SESSION_REQUIRED');
     if (bid === 0n || ask < bid) throw new Error('INVALID_STOCK_SPREAD');
     const price = (bid + ask) / 2n;
+    this.#options.capture?.({ strategyId, clock: rawClock, calendar, rawQuote });
     return {
       ...result,
       status: 'OPEN',

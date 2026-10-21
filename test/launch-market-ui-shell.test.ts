@@ -11,6 +11,7 @@ import {
 } from '../apps/web/src/launch-market/shell.ts';
 import type { LaunchClientState } from '../apps/web/src/launch-market/model.ts';
 import { installLaunchMarket, type LaunchProductHost } from '../apps/web/src/launch-market/install.ts';
+import type { VaultActionsController } from '../apps/web/src/launch-market/vault-actions.ts';
 import { LaunchMarketClient, MarketApiError } from '../apps/web/src/launch-market/client.ts';
 import {
   config,
@@ -62,7 +63,7 @@ test('Minting and Live Trading use independent actual projections with the exist
   assert.match(trade, /ETH · Default/);
   assert.match(trade, /Receive/);
   assert.match(trade, /data-operation="SELL"/);
-  assert.doesNotMatch(html + trade, /AF\.exchange|localStorage|Demo Wallet|mock starter/i);
+  assert.doesNotMatch(html + trade, /AF\.exchange|localStorage|\btest(?:net)?\b|\bdemo\b|\bmock\b/i);
 });
 
 test('NOT_DEPLOYED displays unknown actual balances and disables genuine operations', () => {
@@ -166,8 +167,8 @@ test('Vault readouts separate real strategy principal and PnL from PASS market p
   assert.match(html, /-1 AF-USDC/);
   assert.match(html, /Principal basis/);
   assert.match(html, /data-launch-vault-order/);
-  assert.match(html, /Losses do not automatically unlock PASS/);
-  assert.match(html, /data-launch-create-vault="TSLA"/);
+  assert.match(html, /releasing all PASS, including after a loss/);
+  assert.match(html, /data-launch-vault-order data-strategy="TSLA" data-vault="new:TSLA"/);
   current.wallet = {
     ...current.wallet!,
     vaults: current.wallet!.vaults.map((vault) => ({
@@ -256,11 +257,97 @@ function installationFixture(context: TestContext, originalMarketLayout = true) 
       name: 'amount',
       value,
       closest: (selector: string) =>
-        selector === '[data-launch-vault-order]' ? { dataset: { vault: address } } : null,
+        selector === '[data-launch-vault-order]' ? { dataset: { vault: address, strategy: 'AMZN' } } : null,
     };
     for (const listener of documentListeners.get('input') ?? []) listener({ target } as unknown as Event);
   };
-  return { host, originals, dialogs, click, field, vaultField, client, ...f };
+  const holdingToggle = (strategy: 'TSLA' | 'AMZN', open: boolean) => {
+    const target = {
+      tagName: 'DETAILS',
+      dataset: { launchPosition: strategy },
+      open,
+      matches: (selector: string) => selector === 'details[data-launch-position]',
+      hasAttribute: (name: string) => name === 'data-launch-position',
+      closest: () => target,
+    };
+    for (const listener of documentListeners.get('toggle') ?? []) listener({ target } as unknown as Event);
+  };
+  const vaultSubmit = async (address: string, operation: 'DEPOSIT' | 'WITHDRAW', value: string) => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'FormData')!;
+    const FormDataBase = globalThis.FormData;
+    Object.defineProperty(globalThis, 'FormData', {
+      configurable: true,
+      value: class extends FormDataBase {
+        constructor() {
+          super();
+          this.set('amount', value);
+        }
+      },
+    });
+    let prevented = false;
+    try {
+      const target = {
+        dataset: { strategy: 'AMZN', vault: address },
+        hasAttribute: (name: string) => name === 'data-launch-vault-order',
+      };
+      const event = {
+        target,
+        submitter: { getAttribute: (name: string) => (name === 'value' ? operation : null) },
+        preventDefault: () => {
+          prevented = true;
+        },
+      };
+      for (const listener of documentListeners.get('submit') ?? []) listener(event as unknown as Event);
+    } finally {
+      Object.defineProperty(globalThis, 'FormData', descriptor);
+    }
+    assert.equal(prevented, true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  // This boundary tests router delegation and draft retention. The controller's funds workflow has separate tests.
+  const delegated: { kind: string; strategy?: string; amountRaw?: string }[] = [];
+  const createVaultActions = (launch: LaunchMarketClient) =>
+    ({
+      state: { flow: null, error: null, notice: null, paused: {} },
+      subscribe: () => () => {},
+      bind: () => false,
+      refresh: async () => {},
+      deposit: async (strategyId: 'TSLA' | 'AMZN', amountRaw: string) => {
+        delegated.push({ kind: 'DEPOSIT', strategy: strategyId, amountRaw });
+        await launch.review({
+          strategyId,
+          operation: 'DEPOSIT',
+          asset: 'AF_USDC',
+          amountRaw,
+          slippageBps: 100,
+        });
+      },
+      stop: async (strategyId: 'TSLA' | 'AMZN') => {
+        delegated.push({ kind: 'STOP', strategy: strategyId });
+      },
+      withdraw: async (strategyId: 'TSLA' | 'AMZN') => {
+        delegated.push({ kind: 'WITHDRAW', strategy: strategyId });
+      },
+      confirm: async () => launch.confirm(),
+      cancel: () => launch.clearQuote(),
+      recover: async (strategyId: 'TSLA' | 'AMZN') => {
+        delegated.push({ kind: 'RECOVER', strategy: strategyId });
+      },
+    }) as unknown as VaultActionsController;
+  return {
+    host,
+    originals,
+    dialogs,
+    click,
+    field,
+    vaultField,
+    holdingToggle,
+    vaultSubmit,
+    client,
+    createVaultActions,
+    delegated,
+    ...f,
+  };
 }
 
 function openVault(address = '0x3333333333333333333333333333333333333333') {
@@ -281,11 +368,135 @@ function openVault(address = '0x3333333333333333333333333333333333333333') {
   };
 }
 
+test('PASS holdings open the real Vault funding form and display its chain quote with identity gates', () => {
+  const current = state();
+  const vault = openVault();
+  current.wallet = { ...wallet(), vaults: [vault] };
+  const request = {
+    owner: OWNER,
+    strategyId: 'AMZN' as const,
+    operation: 'DEPOSIT' as const,
+    asset: 'AF_USDC' as const,
+    amountRaw: '10000',
+    slippageBps: 100,
+  };
+  current.quote = {
+    ...quote(request),
+    estimatedOutRaw: '10000',
+    minOutRaw: '10000',
+    transaction: {
+      to: vault.address,
+      data: marketInterfaces.vault.encodeFunctionData('deposit', ['10000']),
+      value: '0',
+    },
+  };
+  current.quoteRequest = request;
+  const html = renderAccount(current, { [vault.address]: '0.01' }, ['AMZN']);
+  const holding = html.match(/<details\b[^>]*data-launch-position="AMZN"[^>]*>[\s\S]*?<\/details>/)?.[0];
+  assert.ok(holding, 'AMZN holdings must expose an expandable funding row');
+  assert.match(holding, /<details\b[^>]*\bopen(?:\s|>)/);
+  assert.match(
+    holding,
+    /<summary\b[^>]*>[\s\S]*All in AMZN[\s\S]*Deposit · Stop · Withdraw[\s\S]*<\/summary>/,
+  );
+  assert.match(holding, /<\/summary>[\s\S]*<form data-launch-vault-order data-strategy="AMZN"/);
+  assert.match(holding, new RegExp(`data-vault="${vault.address}"`));
+  assert.match(holding, /name="amount"[^>]*value="0\.01"/);
+  const deposit = holding.match(
+    /<button[^>]*name="operation" value="DEPOSIT"[^>]*>Deposit[^<]*<\/button>/,
+  )?.[0];
+  assert.ok(deposit);
+  assert.doesNotMatch(deposit, /\bdisabled\b/);
+  for (const action of ['stop', 'withdraw']) {
+    const button = holding.match(
+      new RegExp(`<button[^>]*type="button"[^>]*data-launch-vault-${action}="AMZN"[^>]*>`),
+    )?.[0];
+    assert.ok(button, `${action} must be an amount-independent Vault action`);
+    assert.doesNotMatch(button, /\bdisabled\b/);
+  }
+  assert.match(html, /data-launch-vault-order data-strategy="TSLA" data-vault="new:TSLA"/);
+  assert.match(html, /aria-label="Reviewed chain quote"/);
+  assert.match(html, /REVIEW DEPOSIT · AMZN/);
+  assert.match(html, /data-launch-confirm/);
+  const anonymous = renderAccount({
+    ...current,
+    account: null,
+    wallet: { ...current.wallet!, accountId: null },
+    quote: null,
+    quoteRequest: null,
+  });
+  assert.match(anonymous, /name="operation" value="DEPOSIT"[^>]*disabled/);
+  assert.match(anonymous, /data-launch-vault-withdraw="AMZN"[^>]*disabled/);
+  assert.match(anonymous, /data-launch-vault-stop="AMZN"[^>]*disabled/);
+  assert.match(anonymous, /data-strategy="TSLA" data-vault="new:TSLA"[\s\S]*value="DEPOSIT"[^>]*disabled/);
+});
+
+test('holdings submit real funding reviews and preserve expansion and drafts until account identity changes', async (context) => {
+  const f = installationFixture(context);
+  const vault = openVault();
+  f.state.wallet = { ...wallet(), vaults: [vault] };
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
+  await f.client.connect();
+  f.holdingToggle('AMZN', true);
+  f.vaultField(vault.address, '0.01');
+  for (const operation of ['DEPOSIT'] as const) {
+    const request = {
+      owner: OWNER,
+      strategyId: 'AMZN' as const,
+      operation,
+      asset: 'AF_USDC' as const,
+      amountRaw: '10000',
+      slippageBps: 100,
+    };
+    f.state.quote = {
+      ...quote(request),
+      estimatedOutRaw: '10000',
+      minOutRaw: '10000',
+      transaction: {
+        to: vault.address,
+        data: marketInterfaces.vault.encodeFunctionData(operation === 'DEPOSIT' ? 'deposit' : 'withdraw', [
+          '10000',
+        ]),
+        value: '0',
+      },
+    };
+    await f.vaultSubmit(vault.address, operation, '0.01');
+    assert.deepEqual(f.client.state.quoteRequest, request);
+    assert.match(f.host.pages.account('trades'), new RegExp(`REVIEW ${operation} · AMZN`));
+  }
+  f.click('data-launch-vault-withdraw', { launchVaultWithdraw: 'AMZN' });
+  f.click('data-launch-vault-stop', { launchVaultStop: 'AMZN' });
+  f.click('data-launch-vault-recover', { launchVaultRecover: 'AMZN' });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.delegated.slice(-3), [
+    { kind: 'WITHDRAW', strategy: 'AMZN' },
+    { kind: 'STOP', strategy: 'AMZN' },
+    { kind: 'RECOVER', strategy: 'AMZN' },
+  ]);
+  f.vaultField(vault.address, '0.02');
+  assert.equal(f.client.state.quote, null, 'Changing the funding amount requires a fresh review');
+  assert.equal(f.client.state.quoteRequest, null);
+  f.vaultField(vault.address, '0.01');
+  f.state.wallet = { ...f.state.wallet, location: chainLocation(101) };
+  await f.client.refresh();
+  const refreshed = f.host.pages.account('trades');
+  assert.match(refreshed, /<details\b[^>]*data-launch-position="AMZN"[^>]*\bopen(?:\s|>)/);
+  assert.match(refreshed, /name="amount"[^>]*value="0\.01"/);
+  f.state.account = { ...account(), id: 'other-account' };
+  f.state.wallet = { ...f.state.wallet, accountId: 'other-account', location: chainLocation(102) };
+  await f.client.refresh();
+  const switched = f.host.pages.account('trades');
+  assert.doesNotMatch(switched, /<details\b[^>]*data-launch-position="AMZN"[^>]*\bopen(?:\s|>)/);
+  assert.doesNotMatch(switched, /value="0\.01"/);
+  assert.match(switched, /name="amount"[^>]*value=""/);
+  assert.equal(f.provider.calls.filter((call) => call.method === 'eth_sendTransaction').length, 0);
+});
+
 test('Vault drafts survive refresh and failed reviews, but clear when identity or Vault generation changes', async (context) => {
   const f = installationFixture(context);
   const vault = openVault();
   f.state.wallet = { ...wallet(), vaults: [vault] };
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   await f.client.connect();
   f.vaultField(vault.address, '0.01');
   f.client.setError(new Error('QUOTE_EXPIRED'));
@@ -310,11 +521,32 @@ test('Vault drafts survive refresh and failed reviews, but clear when identity o
   assert.equal(f.provider.calls.filter((call) => call.method === 'eth_sendTransaction').length, 0);
 });
 
+test('first Deposit drafts survive refresh and transfer to the newly created Vault without crossing identities', async (context) => {
+  const f = installationFixture(context);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
+  await f.client.connect();
+  f.vaultField('new:AMZN', '10');
+  f.state.wallet = { ...wallet(), location: chainLocation(101) };
+  await f.client.refresh();
+  assert.match(f.host.pages.account('vaults'), /data-vault="new:AMZN"[\s\S]*value="10"/);
+  const created = openVault();
+  f.state.wallet = { ...f.state.wallet, location: chainLocation(102), vaults: [created] };
+  await f.client.refresh();
+  const html = f.host.pages.account('vaults');
+  assert.match(html, new RegExp(String.raw`data-vault="${created.address}"[\s\S]*value="10"`));
+  assert.doesNotMatch(html, /data-vault="new:AMZN"/);
+  f.state.account = null;
+  f.state.wallet = { ...f.state.wallet, accountId: null, location: chainLocation(103) };
+  await f.client.refresh();
+  assert.doesNotMatch(f.host.pages.account('vaults'), /value="10"/);
+  assert.equal(f.provider.calls.filter((call) => call.method === 'eth_sendTransaction').length, 0);
+});
+
 test('Vault drafts persist through approvals and pending transactions, then clear only the confirmed submitted draft', async (context) => {
   const f = installationFixture(context);
   const vault = openVault();
   f.state.wallet = { ...wallet(), vaults: [vault] };
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   await f.client.connect();
   const request = {
     owner: OWNER,
@@ -384,7 +616,10 @@ test('Vault drafts persist through approvals and pending transactions, then clea
 
 test('preserved home and Trade still route holdings, claims and legacy funds to chain-backed account pages', async (context) => {
   const f = installationFixture(context);
-  assert.equal(await installLaunchMarket(f.host, f.provider, f.client), f.client);
+  assert.equal(
+    await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions),
+    f.client,
+  );
   assert.equal(f.host.pages.market, f.originals.market);
   assert.equal(f.host.pages.trade, f.originals.trade);
   assert.equal(f.host.pages.rankings, f.originals.rankings);
@@ -418,14 +653,14 @@ test('preserved home and Trade still route holdings, claims and legacy funds to 
   );
 });
 
-test('preserved-layout wallet help exposes Testnet setup and native gas funding without requesting a signature', async (context) => {
+test('preserved-layout wallet help exposes chain setup and native gas funding without requesting a signature', async (context) => {
   const f = installationFixture(context);
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   f.click('data-launch-connect');
   const dialog = f.dialogs.at(-1)!;
   assert.match(dialog, /data-launch-wallet-browser/);
-  assert.match(dialog, /chain ID 46630/);
-  assert.match(dialog, /Native test ETH pays gas; AF-USDC does not pay gas/);
+  assert.match(dialog, /Browser Wallet <span>Robinhood Chain/);
+  assert.match(dialog, /ETH pays gas; AF-USDC does not pay gas/);
   assert.match(dialog, /https:\/\/docs\.robinhood\.com\/chain\/add-network-to-wallet\//);
   assert.match(dialog, /https:\/\/faucet\.testnet\.chain\.robinhood\.com\//);
   assert.equal((dialog.match(/rel="noopener noreferrer"/g) ?? []).length, 2);
@@ -434,7 +669,7 @@ test('preserved-layout wallet help exposes Testnet setup and native gas funding 
 
 test('original Trade surfaces escaped wallet notices and no empty or duplicate error feedback', async (context) => {
   const f = installationFixture(context);
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   assert.equal(f.host.passMarket!.quoteHtml(), '');
   const initial = f.client.state;
   Object.defineProperty(f.client, 'state', {
@@ -450,15 +685,18 @@ test('original Trade surfaces escaped wallet notices and no empty or duplicate e
 test('undeployed preserved accounts expose real routes and connection while disabling claim and Vault writes', async (context) => {
   const f = installationFixture(context);
   f.state.config = { ...f.state.config, deployment: 'NOT_DEPLOYED', manifest: null };
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   for (const tab of ['trades', 'claim', 'vaults', 'funds']) {
     const html = f.host.pages.account(tab);
-    assert.match(html, /NOT_DEPLOYED/);
+    assert.match(html, /Contracts are not deployed/);
     assert.match(html, /data-launch-connect/);
     assert.doesNotMatch(html, /ORIGINAL ACCOUNT|Mock Wallet|10,000/);
   }
   assert.match(f.host.pages.account('claim'), /data-launch-claim disabled/);
-  assert.match(f.host.pages.account('funds'), /data-launch-create-vault="TSLA" disabled/);
+  assert.match(
+    f.host.pages.account('funds'),
+    /data-strategy="TSLA" data-vault="new:TSLA"[\s\S]*value="DEPOSIT"[^>]*disabled/,
+  );
   assert.equal(f.host.passMarket!.quoteHtml(), '');
   assert.equal(f.state.requests.length, 1);
   assert.equal(f.provider.calls.length, 0);
@@ -474,7 +712,7 @@ test('missing chain mode preserves the full existing router, and replacement lay
   assert.equal(await installLaunchMarket(f.host, undefined, missing), null);
   assert.deepEqual(f.host.pages, f.originals);
   assert.equal(f.host.passMarket, undefined);
-  await installLaunchMarket(f.host, f.provider, f.client);
+  await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
   assert.match(f.host.pages.trade('tsla'), /PUBLIC MINT/);
   assert.match(f.host.pages.account('claim'), /Free AF-USDC/);
   assert.equal(f.host.pages.account('settings'), f.originals.account('settings'));
@@ -483,7 +721,7 @@ test('missing chain mode preserves the full existing router, and replacement lay
 test('order drafts preserve PASS quantities across currencies in the retained layout', async (context) => {
   for (const originalLayout of [true, false]) {
     const f = installationFixture(context, originalLayout);
-    await installLaunchMarket(f.host, f.provider, f.client);
+    await installLaunchMarket(f.host, f.provider, f.client, undefined, f.createVaultActions);
     location.hash = '#/trade/amzn';
     assert.equal(f.host.launchForms!.AMZN.amount, '');
     assert.equal(f.host.launchForms!.TSLA.amount, '');
@@ -555,14 +793,14 @@ test('a closed Vault can create its next generation while an open Vault remains 
   current.wallet = { ...wallet(), vaults: [closed] };
   assert.equal(actionable(current, 'AMZN', 'CREATE_VAULT', 'AF_USDC'), true);
   assert.match(renderVaults(current), /Your previous Vault is closed/);
-  assert.match(renderVaults(current), /data-launch-create-vault="AMZN" >/);
-  assert.doesNotMatch(renderVaults(current), /data-launch-vault-order/);
+  assert.match(renderVaults(current), /data-launch-vault-order data-strategy="AMZN" data-vault="new:AMZN"/);
+  assert.doesNotMatch(renderVaults(current), /data-launch-create-vault/);
   current.wallet = { ...wallet(), vaults: [{ ...closed, status: 'OPEN' }] };
   assert.equal(actionable(current, 'AMZN', 'CREATE_VAULT', 'AF_USDC'), false);
-  assert.doesNotMatch(renderVaults(current), /data-launch-create-vault="AMZN"/);
+  assert.doesNotMatch(renderVaults(current), /data-vault="new:AMZN"/);
 });
 
-test('test-phase pages expose wallet ownership sessions without asserting verified email or requiring Google', () => {
+test('wallet ownership pages keep optional email verification gates without testing labels', () => {
   const current = {
     ...state(),
     config: { ...config(), emailVerificationRequired: false },
@@ -570,13 +808,19 @@ test('test-phase pages expose wallet ownership sessions without asserting verifi
     wallet: { ...wallet(), accountId: null },
   };
   for (const html of [renderAccount(current), renderClaim(current), renderVaults(current)]) {
-    assert.match(html, /Email verification is disabled for this test phase/);
-    assert.match(html, /Start test session/);
+    assert.match(html, /Continue with wallet/);
+    assert.match(
+      html,
+      /Confirm wallet ownership to continue\. The message signature does not move assets or approve transactions\./,
+    );
     assert.match(html, /data-launch-bind/);
-    assert.doesNotMatch(html, /Sign in with Google|Your Google account is verified/);
+    assert.doesNotMatch(
+      html,
+      /Sign in with Google|Your Google account is verified|\btest(?:net)?\b|\bdemo\b|\bmock\b/i,
+    );
   }
-  assert.match(renderClaim(current), /1,000 AF-USDC per test wallet/);
-  assert.match(renderClaim(current), /Disabled for this test phase/);
+  assert.match(renderClaim(current), /1,000 AF-USDC per wallet/);
+  assert.match(renderClaim(current), /Email verification status<\/dt><dd>Not required/);
   assert.match(renderClaim(current), /data-launch-claim disabled/);
   const signed = {
     ...current,

@@ -39,6 +39,9 @@ const rpcAbi = new Interface([
   'function ethOutputPaused() view returns(bool)',
   'function conversionFeeBps() view returns(uint16)',
   'function quoteEpoch() view returns(uint64)',
+  'function quoteSigner() view returns(address)',
+  'function claimSigner() view returns(address)',
+  'function claimEpoch() view returns(uint64)',
   'function limits() view returns(uint256,uint256,uint256,uint256)',
   'function tradingRouter() view returns(address)',
 ]);
@@ -71,6 +74,7 @@ async function rpcFixture() {
     chainId: 46630,
     code: rpcCode,
     codeFailures: 0,
+    callFailures: 0,
     errorCode: -32000,
     errorMessage: 'unsupported block number',
     logsPerRead: 1,
@@ -110,6 +114,8 @@ async function rpcFixture() {
       if (method === 'eth_estimateGas') result = '0x5208';
       else {
         const parsed = rpcAbi.parseTransaction(input);
+        if (parsed?.name === 'claimEpoch' && state.callFailures-- > 0)
+          return fail(state.errorCode, state.errorMessage);
         if (!parsed) result = '0x';
         else {
           const values: Record<string, readonly unknown[]> = {
@@ -138,6 +144,9 @@ async function rpcFixture() {
             ethOutputPaused: [false],
             conversionFeeBps: [0],
             quoteEpoch: [0],
+            quoteSigner: [rpcAddress(31)],
+            claimSigner: [rpcAddress(32)],
+            claimEpoch: [1],
             limits: [200000000000000n, 1000000000000000n, 1600000000000000n, 200000000000000n],
             tradingRouter: [manifest.router],
           };
@@ -245,6 +254,39 @@ test('market RPC uses canonical JSON-RPC quantities for zero and nonzero simulat
     );
   } finally {
     await fixture.close();
+  }
+});
+
+test('signing policy retries wrapped eth_call lag at the same block and stops on real failures', async () => {
+  for (const variant of ['transient', 'persistent', 'revert', 'other']) {
+    const fixture = await rpcFixture();
+    try {
+      fixture.state.callFailures = variant === 'transient' ? 1 : 100;
+      if (variant === 'revert') {
+        fixture.state.errorCode = 3;
+        fixture.state.errorMessage = 'execution reverted';
+      } else if (variant === 'other') {
+        fixture.state.errorMessage = 'upstream unavailable';
+      }
+      if (variant === 'transient') {
+        const policy = await fixture.chain.signingPolicy();
+        assert.equal(policy.claimEpoch, '1');
+        assert.equal(policy.claimSigner, rpcAddress(32));
+        assert.equal(policy.quoteSigner, rpcAddress(31));
+        assert.equal(policy.claimsOpened, true);
+      } else {
+        await assert.rejects(fixture.chain.signingPolicy());
+      }
+      const selector = rpcAbi.getFunction('claimEpoch')!.selector;
+      const reads = fixture.records.filter(
+        (row) => row.method === 'eth_call' && (row.params[0] as { data: string }).data === selector,
+      );
+      assert.equal(reads.length, variant === 'transient' ? 2 : variant === 'persistent' ? 3 : 1);
+      assert.ok(reads.every((row) => row.params[1] === '0x5'));
+      assert.ok(fixture.records.every((row) => !row.method.startsWith('eth_send')));
+    } finally {
+      await fixture.close();
+    }
   }
 });
 
