@@ -104,7 +104,7 @@ jobs:
           node-version-file: .node-version
       - run: node tools/bootstrap-ci-npm.mjs
       - run: node tools/check-environment.mjs --ci
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0, MIT
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0, MIT
         with:
           python-version: '3.12.9'
           architecture: arm64
@@ -126,7 +126,7 @@ jobs:
           node-version-file: .node-version
       - run: node tools/bootstrap-ci-npm.mjs
       - run: node tools/check-environment.mjs --ci
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12.9'
           architecture: x64
@@ -203,7 +203,7 @@ jobs:
           node-version-file: .node-version
       - run: node tools/bootstrap-ci-npm.mjs
       - run: node tools/check-environment.mjs --ci
-      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12.9'
           architecture: x64
